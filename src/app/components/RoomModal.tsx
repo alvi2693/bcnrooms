@@ -140,7 +140,7 @@ export function RoomModal({ room, onClose }: RoomModalProps) {
 
                   {/* Botón WhatsApp */}
                   <a
-                    href={`https://wa.me/34600000000?text=${waMessage}`}
+                    href={`https://wa.me/34632991218?text=${waMessage}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="w-full flex items-center justify-center gap-2 bg-[#E05A2B] hover:bg-[#c94e23] text-white font-semibold py-3.5 px-6 rounded-xl transition-all hover:scale-[1.02] text-sm"

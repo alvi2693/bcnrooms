@@ -8,8 +8,8 @@ interface WhatsAppButtonProps {
 }
 
 export function WhatsAppButton({
-  message = "Hola! Estoy interesado/a en las habitaciones disponibles en Barcelona",
-  phoneNumber = "34612345678",
+  message = "Hola! Me interesa una de las habitaciones disponibles en Barcelona. ¿Podéis darme más información sobre disponibilidad y precios? Muchas gracias 🙏",
+  phoneNumber = "34632991218",
   fullWidth = false
 }: WhatsAppButtonProps) {
   const encodedMessage = encodeURIComponent(message);
