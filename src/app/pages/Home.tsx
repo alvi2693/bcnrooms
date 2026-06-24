@@ -5,8 +5,9 @@ import { rooms } from '../data/rooms';
 import type { Room } from '../data/rooms';
 import { RoomModal } from '../components/RoomModal';
 import { WhatsAppButton } from '../components/WhatsAppButton';
+import { useLang } from '../components/LanguageContext';
 
-const faqs = [
+const faqsEs = [
   {
     question: "¿Qué modalidades de alquiler ofrecéis?",
     answer: "Ofrecemos dos modalidades: alquiler por noches (estancias cortas) y alquiler mensual (30 días o más). Cada una tiene condiciones distintas adaptadas a tus necesidades."
@@ -33,13 +34,42 @@ const faqs = [
   }
 ];
 
+const faqsEn = [
+  {
+    question: "What rental options do you offer?",
+    answer: "We offer two options: nightly rentals (short stays) and monthly rentals (30 days or more). Each has different conditions tailored to your needs."
+  },
+  {
+    question: "How does nightly rental work?",
+    answer: "For short stays we require a reservation of €5 per person per day to secure availability. The total price is consulted based on dates and number of people. Contact us via WhatsApp and we confirm in less than 1 hour."
+  },
+  {
+    question: "How does monthly rental work?",
+    answer: "For stays of 30 days or more we require a deposit equivalent to one month's rent plus the current month upfront. At the end of the stay, if everything is in order, we return the deposit in full."
+  },
+  {
+    question: "What expenses are included in the price?",
+    answer: "The price includes high-speed WiFi, water, electricity and cleaning of common areas. You only pay the rent, no surprises."
+  },
+  {
+    question: "Can I visit the room before deciding?",
+    answer: "Of course! We offer in-person visits by appointment or video calls if you are outside Barcelona. Your comfort is our priority."
+  },
+  {
+    question: "Are the rooms furnished?",
+    answer: "Yes, all rooms come fully furnished with bed, wardrobe, desk and everything you need. Just bring your suitcase and start enjoying Barcelona."
+  }
+];
+
 export function Home() {
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
+  const { lang, t } = useLang();
+
+  const faqs = lang === 'es' ? faqsEs : faqsEn;
 
   return (
     <>
-      {/* ── HERO ── fondo dividido: mitad azul eléctrico, foto derecha */}
       <section className="relative min-h-screen flex items-center overflow-hidden">
         <div className="absolute inset-0">
           <img
@@ -50,7 +80,6 @@ export function Home() {
           <div className="absolute inset-0 bg-gradient-to-b from-slate-900/75 via-slate-800/50 to-slate-900/80" />
         </div>
 
-        {/* partículas — igual que antes */}
         <div className="absolute inset-0">
           {[...Array(20)].map((_, i) => (
             <motion.div
@@ -79,7 +108,6 @@ export function Home() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
-            {/* badge — azul eléctrico con borde */}
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -87,19 +115,16 @@ export function Home() {
               className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-md border border-white/25 px-6 py-3 rounded-full mb-8"
             >
               <Sparkles className="w-5 h-5 text-[#E05A2B]" />
-              <span className="text-white font-medium">3 Habitaciones Disponibles Ahora</span>
+              <span className="text-white font-medium">{t('hero.badge')}</span>
             </motion.div>
 
-            {/* título — blanco limpio, acento azul eléctrico */}
             <h1 className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-bold text-white mb-6 leading-tight">
-              Vive la magia de
-              <span className="block text-[#E05A2B]">
-                Barcelona
-              </span>
+              {t('hero.title1')}
+              <span className="block text-[#E05A2B]">{t('hero.title2')}</span>
             </h1>
 
             <p className="text-xl sm:text-2xl md:text-3xl text-white/85 mb-12 max-w-3xl mx-auto leading-relaxed">
-              Disfruta de una estancia cómoda, privada y bien conectada en Barcelona
+              {t('hero.subtitle')}
             </p>
 
             <motion.div
@@ -108,12 +133,11 @@ export function Home() {
               transition={{ delay: 0.4 }}
               className="flex flex-col sm:flex-row items-center justify-center gap-4"
             >
-              {/* CTA principal — azul sólido */}
               <a
                 href="#habitaciones"
                 className="px-8 py-4 bg-[#E05A2B] hover:bg-[#c94e23] text-white rounded-2xl font-bold text-lg transition-all hover:scale-105"
               >
-                Ver Habitaciones
+                {t('hero.cta')}
               </a>
               <WhatsAppButton />
             </motion.div>
@@ -129,7 +153,6 @@ export function Home() {
         </motion.div>
       </section>
 
-      {/* ── HABITACIONES ── fondo blanco limpio */}
       <section id="habitaciones" className="relative py-24 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
@@ -138,14 +161,11 @@ export function Home() {
             viewport={{ once: true }}
             className="text-center mb-16"
           >
-            {/* label pequeño azul eléctrico */}
-            <p className="text-xs font-semibold tracking-[0.2em] uppercase text-[#E05A2B] mb-3">
-            </p>
             <h2 className="text-4xl md:text-5xl font-bold mb-4 text-[#0a1628]">
-              Habitaciones Disponibles
+              {t('rooms.title')}
             </h2>
             <p className="text-lg text-slate-500 max-w-3xl mx-auto">
-              Espacios únicos en los mejores barrios, listos para que los conviertas en tu hogar
+              {t('rooms.subtitle')}
             </p>
           </motion.div>
 
@@ -161,7 +181,6 @@ export function Home() {
                 className="group cursor-pointer"
               >
                 <div className="relative bg-white rounded-3xl overflow-hidden border border-slate-100 hover:border-[#E05A2B]/30 transition-all duration-500 hover:shadow-[0_8px_40px_rgba(232,87,42,0.12)]">
-
                   <div className="relative h-72 overflow-hidden">
                     <motion.img
                       whileHover={{ scale: 1.1 }}
@@ -170,16 +189,19 @@ export function Home() {
                       alt={room.title}
                       className="w-full h-full object-cover"
                     />
-                    {/* tipo alquiler — sin precio */}
                     <div className="absolute top-4 right-4 z-20 flex flex-col gap-1.5 items-end">
-                      <div className="bg-[#E05A2B] px-3 py-1.5 rounded-full">
-                        <span className="font-medium text-white text-xs">Por noches</span>
-                      </div>
+                      {room.rentalTypes.map((type, i) => (
+                        <div
+                          key={i}
+                          className={`px-3 py-1.5 rounded-full ${i === 0 ? 'bg-[#E05A2B]' : 'bg-black/60 backdrop-blur-sm'}`}
+                        >
+                          <span className="font-medium text-white text-xs">{type}</span>
+                        </div>
+                      ))}
                       <div className="bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full">
-                        <span className="font-medium text-white text-xs">Precio a consultar</span>
+                        <span className="font-medium text-white text-xs">{t('rooms.askPrice')}</span>
                       </div>
                     </div>
-                    {/* rating — oscuro */}
                     <div className="absolute top-4 left-4 z-20">
                       <div className="bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full flex items-center gap-1.5">
                         <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
@@ -189,18 +211,14 @@ export function Home() {
                   </div>
 
                   <div className="p-6">
-                    <h3 className="text-xl font-bold mb-2 text-slate-900">
-                      {room.title}
-                    </h3>
+                    <h3 className="text-xl font-bold mb-2 text-slate-900">{room.title}</h3>
                     <div className="flex items-center gap-2 text-slate-500 mb-4">
                       <MapPin className="w-4 h-4 text-[#E05A2B]" />
                       <span className="text-sm font-medium">{room.location}</span>
                     </div>
-
                     <p className="text-slate-500 mb-6 line-clamp-2 leading-relaxed text-sm">
                       {room.description}
                     </p>
-
                     <div className="flex flex-wrap gap-2">
                       {room.features.slice(0, 3).map((feature, idx) => (
                         <span
@@ -219,7 +237,6 @@ export function Home() {
         </div>
       </section>
 
-      {/* ── FAQ ── fondo gris muy suave */}
       <section className="relative py-24 bg-slate-50">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
@@ -229,13 +246,13 @@ export function Home() {
             className="text-center mb-16"
           >
             <p className="text-xs font-semibold tracking-[0.2em] uppercase text-[#E05A2B] mb-3">
-              FAQ
+              {t('faq.label')}
             </p>
             <h2 className="text-4xl md:text-5xl font-bold mb-4 text-slate-900">
-              Preguntas Frecuentes
+              {t('faq.title')}
             </h2>
             <p className="text-lg text-slate-500">
-              Todo lo que necesitas saber antes de reservar
+              {t('faq.subtitle')}
             </p>
           </motion.div>
 
@@ -286,10 +303,8 @@ export function Home() {
             viewport={{ once: true }}
             className="mt-12 text-center"
           >
-            <p className="text-slate-500 mb-6 text-lg">
-              ¿Tienes más preguntas? Estamos aquí para ayudarte
-            </p>
-            <WhatsAppButton message="Hola! Tengo algunas preguntas sobre las habitaciones disponibles" />
+            <p className="text-slate-500 mb-6 text-lg">{t('faq.more')}</p>
+            <WhatsAppButton message={lang === 'es' ? "Hola! Tengo algunas preguntas sobre las habitaciones disponibles" : "Hi! I have some questions about the available rooms"} />
           </motion.div>
         </div>
       </section>
