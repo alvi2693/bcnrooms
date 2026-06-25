@@ -51,7 +51,7 @@ export function Layout() {
                 <p className={`text-xs transition-colors ${
                   scrolled || !isHeroPage ? 'text-slate-400' : 'text-white/60'
                 }`}>
-                  {t('nav.tagline')}
+                  Stay & live Barcelona
                 </p>
               </div>
             </Link>
@@ -210,7 +210,7 @@ export function Layout() {
                 </div>
                 <div>
                   <span className="font-bold text-lg tracking-tight">BCN Rooms</span>
-                  <p className="text-xs text-slate-400">{t('nav.tagline')}</p>
+                  <p className="text-xs text-slate-400">Stay & live Barcelona</p>
                 </div>
               </div>
               <p className="text-slate-400 leading-relaxed max-w-md text-sm">
@@ -221,7 +221,7 @@ export function Layout() {
             <div>
               <h5 className="font-semibold mb-4 text-sm tracking-wide uppercase text-slate-300">{t('footer.contact')}</h5>
               <div className="space-y-3 text-slate-400 text-sm">
-                <p>info@bcnrooms.com</p>
+                <p>bcnrooms01@gmail.com</p>
                 <p>WhatsApp 24/7</p>
                 <p>Barcelona, España</p>
               </div>

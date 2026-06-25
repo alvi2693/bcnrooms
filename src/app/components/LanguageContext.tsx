@@ -14,7 +14,7 @@ const translations = {
     'nav.home': 'Inicio',
     'nav.discover': 'Descubre BCN',
     'nav.contact': 'Contactar',
-    'nav.tagline': 'Tu hogar en Barcelona',
+    'nav.tagline': 'Stay & live Barcelona',
     // Hero
     'hero.badge': '3 Habitaciones Disponibles Ahora',
     'hero.title1': 'Vive la magia de',
@@ -78,7 +78,7 @@ const translations = {
     'nav.home': 'Home',
     'nav.discover': 'Discover BCN',
     'nav.contact': 'Contact',
-    'nav.tagline': 'Your home in Barcelona',
+    'nav.tagline': 'Stay & live Barcelona',
     // Hero
     'hero.badge': '3 Rooms Available Now',
     'hero.title1': 'Live the magic of',
