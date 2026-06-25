@@ -232,6 +232,7 @@ export function Home() {
                       ))}
                     </div>
                   </div>
+                </div>
                 </Link>
               </motion.div>
             ))}
