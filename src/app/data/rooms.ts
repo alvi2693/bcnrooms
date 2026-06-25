@@ -28,7 +28,7 @@ export const rooms: Room[] = [
     location: "Sagrera, Barcelona",
     price: 650,
     mapQuery: "Avinguda+Meridiana+Barcelona",
-    rentalTypes: ["Por noches", "Mensual"],
+    rentalTypes: ["Por noches"],
     mainImage: "https://res.cloudinary.com/dxiiuefnk/image/upload/v1780778021/SagreraRoom1_apr713.jpg",
     images: [
       "https://res.cloudinary.com/dxiiuefnk/image/upload/v1780778021/SagreraRoom1_apr713.jpg",
@@ -79,7 +79,7 @@ export const rooms: Room[] = [
     location: "Sagrada Família, Barcelona",
     price: 700,
     mapQuery: "Carrer+de+Valencia+Barcelona+Eixample",
-    rentalTypes: ["Por noches", "Mensual"],
+    rentalTypes: ["Por noches"],
     mainImage: "https://res.cloudinary.com/dxiiuefnk/image/upload/v1782256940/SagradaRoom_qrkzam.jpg",
     images: [
       "https://res.cloudinary.com/dxiiuefnk/image/upload/v1782256940/SagradaRoom_qrkzam.jpg",
