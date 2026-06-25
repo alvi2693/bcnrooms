@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Link } from 'react-router';
 import { MapPin, Star, Sparkles, ChevronDown } from 'lucide-react';
 import { rooms } from '../data/rooms';
-import type { Room } from '../data/rooms';
-import { RoomModal } from '../components/RoomModal';
 import { WhatsAppButton } from '../components/WhatsAppButton';
 import { useLang } from '../components/LanguageContext';
 
@@ -62,11 +61,15 @@ const faqsEn = [
 ];
 
 export function Home() {
-  const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
   const { lang, t } = useLang();
-
   const faqs = lang === 'es' ? faqsEs : faqsEn;
+
+  const slugMap: Record<number, string> = {
+    1: 'sagrera',
+    2: 'born',
+    3: 'sagrada-familia',
+  };
 
   return (
     <>
@@ -177,9 +180,8 @@ export function Home() {
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
                 transition={{ delay: 0.1 * index }}
-                onClick={() => setSelectedRoom(room)}
-                className="group cursor-pointer"
               >
+                <Link to={`/habitacion/${slugMap[room.id]}`} className="group block">
                 <div className="relative bg-white rounded-3xl overflow-hidden border border-slate-100 hover:border-[#E05A2B]/30 transition-all duration-500 hover:shadow-[0_8px_40px_rgba(232,87,42,0.12)]">
                   <div className="relative h-72 overflow-hidden">
                     <motion.img
@@ -230,7 +232,7 @@ export function Home() {
                       ))}
                     </div>
                   </div>
-                </div>
+                </Link>
               </motion.div>
             ))}
           </div>
@@ -308,11 +310,6 @@ export function Home() {
           </motion.div>
         </div>
       </section>
-
-      <RoomModal
-        room={selectedRoom}
-        onClose={() => setSelectedRoom(null)}
-      />
     </>
   );
 }
