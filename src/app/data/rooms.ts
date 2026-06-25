@@ -10,6 +10,7 @@ export interface Room {
   rating: number;
   reviews: Review[];
   mapQuery: string;
+  rentalTypes: string[];
 }
 
 export interface Review {
@@ -27,6 +28,7 @@ export const rooms: Room[] = [
     location: "Sagrera, Barcelona",
     price: 650,
     mapQuery: "Avinguda+Meridiana+Barcelona",
+    rentalTypes: ["Por noches", "Mensual"],
     mainImage: "https://res.cloudinary.com/dxiiuefnk/image/upload/v1780778021/SagreraRoom1_apr713.jpg",
     images: [
       "https://res.cloudinary.com/dxiiuefnk/image/upload/v1780778021/SagreraRoom1_apr713.jpg",
@@ -55,6 +57,7 @@ export const rooms: Room[] = [
     location: "El Born, Barcelona",
     price: 750,
     mapQuery: "Carrer+de+Cervantes+Barcelona+Born",
+    rentalTypes: ["Por noches", "Mensual"],
     mainImage: "https://res.cloudinary.com/dxiiuefnk/image/upload/v1782258535/WhatsApp_Image_2026-06-24_at_01.48.03_efmgmd.jpg",
     images: [
       "https://res.cloudinary.com/dxiiuefnk/image/upload/v1782258535/WhatsApp_Image_2026-06-24_at_01.48.03_efmgmd.jpg",
@@ -76,6 +79,7 @@ export const rooms: Room[] = [
     location: "Sagrada Família, Barcelona",
     price: 700,
     mapQuery: "Carrer+de+Valencia+Barcelona+Eixample",
+    rentalTypes: ["Por noches", "Mensual"],
     mainImage: "https://res.cloudinary.com/dxiiuefnk/image/upload/v1782256940/SagradaRoom_qrkzam.jpg",
     images: [
       "https://res.cloudinary.com/dxiiuefnk/image/upload/v1782256940/SagradaRoom_qrkzam.jpg",
