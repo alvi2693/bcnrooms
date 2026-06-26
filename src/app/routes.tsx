@@ -4,8 +4,13 @@ import { Home } from "./pages/Home";
 import { Discover } from "./pages/Discover";
 import { NotFound } from "./pages/NotFound";
 import { RoomPage } from "./pages/RoomPage";
+import { AdminPanel } from "./pages/AdminPanel";
 
 export const router = createBrowserRouter([
+  {
+    path: "/admin",
+    Component: AdminPanel,
+  },
   {
     path: "/",
     Component: Layout,
