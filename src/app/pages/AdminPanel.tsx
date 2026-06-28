@@ -319,7 +319,26 @@ export function AdminPanel() {
                             <div className="absolute inset-0 flex">
                               {days.map((d, i) => {
                                 const ds = toDateStr(d), isToday = ds === today, isWE = d.getDay() === 0 || d.getDay() === 6;
-                                return <div key={i} style={{ width: COL_W, minWidth: COL_W }} className={`h-full border-r border-slate-100 ${isToday ? 'bg-orange-50/50' : isWE ? 'bg-slate-50/30' : ''}`} />;
+                                const hasRes = reservations.some(r => r.room_id === room.id && r.check_in <= ds && r.check_out >= ds);
+                                return (
+                                  <div key={i} style={{ width: COL_W, minWidth: COL_W }}
+                                    onClick={() => {
+                                      if (!hasRes) {
+                                        const prop = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
+                                        if (prop) setSelectedProperty(prop.id);
+                                        setForm(f => ({ ...emptyForm, room_id: room.id, check_in: ds }));
+                                        setEditingId(null);
+                                        setShowForm(true);
+                                      }
+                                    }}
+                                    className={`h-full border-r border-slate-100 group ${!hasRes ? 'cursor-pointer hover:bg-blue-50/40' : ''} ${isToday ? 'bg-orange-50/50' : isWE ? 'bg-slate-50/30' : ''}`}>
+                                    {!hasRes && (
+                                      <div className="h-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <span className="text-[10px] text-slate-400">+</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
                               })}
                             </div>
                             {visibleRes.map(res => {
