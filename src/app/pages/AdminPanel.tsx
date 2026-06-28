@@ -5,15 +5,15 @@ import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
 const PROPERTIES = [
-  { id: 'sagrera', name: 'Sagrera', color: '#3B82F6', light: '#EFF6FF', rooms: [{ id: 1, name: 'Hab. Doble', type: 'double' }] },
+  { id: 'sagrera', name: 'Sagrera', color: '#3B82F6', light: '#EFF6FF', rooms: [{ id: 1, name: 'Hab. Doble Sagrera', type: 'double' }] },
   { id: 'born', name: 'El Born', color: '#10B981', light: '#ECFDF5', rooms: [
-    { id: 5, name: 'Hab. 1 (Doble)', type: 'double' },
-    { id: 6, name: 'Hab. 2 (Doble)', type: 'double' },
-    { id: 2, name: 'Hab. 3 (Mediana)', type: 'medium' },
-    { id: 3, name: 'Hab. 4 (Mediana)', type: 'medium' },
-    { id: 4, name: 'Hab. 5 (Mediana)', type: 'medium' },
+    { id: 5, name: 'Hab. 1 Doble', type: 'double' },
+    { id: 6, name: 'Hab. 2 Doble', type: 'double' },
+    { id: 2, name: 'Hab. 3 Mediana', type: 'medium' },
+    { id: 3, name: 'Hab. 4 Mediana', type: 'medium' },
+    { id: 4, name: 'Hab. 5 Mediana', type: 'medium' },
   ]},
-  { id: 'sagrada', name: 'Sagrada Família', color: '#8B5CF6', light: '#F5F3FF', rooms: [{ id: 7, name: 'Habitación', type: 'double' }] },
+  { id: 'sagrada', name: 'Sagrada Família', color: '#8B5CF6', light: '#F5F3FF', rooms: [{ id: 7, name: 'Hab. Doble Sagrada Família', type: 'double' }] },
 ];
 
 const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: p.id, propertyName: p.name, color: p.color, light: p.light })));
@@ -68,6 +68,7 @@ export function AdminPanel() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<typeof emptyForm>(emptyForm);
   const [formError, setFormError] = useState('');
+  const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
   const [activeTab, setActiveTab] = useState<'list' | 'calendar' | 'stats'>('list');
   const [calendarStart, setCalendarStart] = useState<Date>(() => { const d = new Date(); d.setDate(d.getDate() - 3); return d; });
@@ -130,6 +131,8 @@ export function AdminPanel() {
   }
 
   function handleEdit(r: Reservation) {
+    const prop = PROPERTIES.find(p => p.rooms.some(rm => rm.id === r.room_id));
+    if (prop) setSelectedProperty(prop.id);
     setForm({ room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '', guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '', num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '', check_out: r.check_out?.split('T')[0] || '', price_per_night: '', price_total: r.price_total?.toString() || '', price_paid: r.price_paid?.toString() || '', payment_status: r.payment_status, payment_method: r.payment_method || 'Efectivo', channel: r.channel || 'WhatsApp', notes: r.notes || '' });
     setEditingId(r.id); setSelectedRes(null); setShowForm(true);
   }
@@ -346,33 +349,104 @@ export function AdminPanel() {
         {/* STATS VIEW */}
         {activeTab === 'stats' && (
           <div className="space-y-4">
-            {/* Por piso */}
+            {/* Resumen financiero global */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
-              <h3 className="font-semibold text-slate-900 text-sm mb-4">Ocupación por piso</h3>
-              {PROPERTIES.map(prop => {
-                const propRes = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id));
-                const propIncome = propRes.reduce((a, r) => a + (r.price_total || 0), 0);
-                const propPaid = propRes.reduce((a, r) => a + (r.price_paid || 0), 0);
-                return (
-                  <div key={prop.id} className="mb-4 last:mb-0">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: prop.color }} />
-                        <span className="text-sm font-medium text-slate-700">{prop.name}</span>
-                      </div>
-                      <span className="text-xs text-slate-500">{propRes.length} reservas · {propIncome}€</span>
+              <h3 className="font-semibold text-slate-900 text-sm mb-4">Resumen financiero</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { l: 'Total facturado', v: `${reservations.reduce((a, r) => a + (r.price_total || 0), 0)}€`, c: 'text-slate-900' },
+                  { l: 'Total cobrado', v: `${totalCobrado.toFixed(0)}€`, c: 'text-emerald-600' },
+                  { l: 'Pendiente cobro', v: `${totalPending.toFixed(0)}€`, c: 'text-[#E05A2B]' },
+                  { l: 'Ticket medio', v: `${reservations.length ? (reservations.reduce((a, r) => a + (r.price_total || 0), 0) / reservations.length).toFixed(0) : 0}€`, c: 'text-slate-900' },
+                ].map(s => (
+                  <div key={s.l} className="bg-slate-50 rounded-xl p-3">
+                    <p className="text-[10px] text-slate-400 mb-0.5">{s.l}</p>
+                    <p className={`text-lg font-bold ${s.c}`}>{s.v}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Por piso — ocupación y finanzas */}
+            {PROPERTIES.map(prop => {
+              const propRes = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id));
+              const propIncome = propRes.reduce((a, r) => a + (r.price_total || 0), 0);
+              const propPaid = propRes.reduce((a, r) => a + (r.price_paid || 0), 0);
+              const propPending = propIncome - propPaid;
+              const activeRes = propRes.filter(r => r.check_in <= today && r.check_out >= today);
+              const pct = reservations.length ? Math.round((propRes.length / reservations.length) * 100) : 0;
+              return (
+                <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-3 h-3 rounded-full" style={{ background: prop.color }} />
+                    <h3 className="font-semibold text-slate-900 text-sm">{prop.name}</h3>
+                    <span className="text-[10px] text-slate-400 ml-auto">{prop.rooms.length} hab.</span>
+                  </div>
+                  {/* Stats del piso */}
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <div className="bg-slate-50 rounded-xl p-2.5 text-center">
+                      <p className="text-[10px] text-slate-400">Reservas</p>
+                      <p className="text-base font-bold text-slate-900">{propRes.length}</p>
                     </div>
-                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${reservations.length ? (propRes.length / reservations.length) * 100 : 0}%`, background: prop.color }} />
+                    <div className="bg-slate-50 rounded-xl p-2.5 text-center">
+                      <p className="text-[10px] text-slate-400">Activas</p>
+                      <p className="text-base font-bold text-emerald-600">{activeRes.length}</p>
                     </div>
-                    <div className="flex justify-between text-[10px] text-slate-400 mt-1">
-                      <span>Cobrado: {propPaid}€</span>
-                      <span>Pendiente: {(propIncome - propPaid).toFixed(0)}€</span>
+                    <div className="bg-slate-50 rounded-xl p-2.5 text-center">
+                      <p className="text-[10px] text-slate-400">% del total</p>
+                      <p className="text-base font-bold" style={{ color: prop.color }}>{pct}%</p>
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                  {/* Barra ocupación */}
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: prop.color }} />
+                  </div>
+                  {/* Finanzas */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">Facturado</span>
+                      <span className="font-semibold text-slate-900">{propIncome}€</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">Cobrado</span>
+                      <span className="font-semibold text-emerald-600">{propPaid}€</span>
+                    </div>
+                    {propPending > 0 && (
+                      <div className="flex justify-between text-xs border-t border-slate-100 pt-1.5">
+                        <span className="text-slate-500">Pendiente</span>
+                        <span className="font-bold text-[#E05A2B]">{propPending.toFixed(0)}€</span>
+                      </div>
+                    )}
+                  </div>
+                  {/* Por habitación */}
+                  {prop.rooms.length > 1 && (
+                    <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Por habitación</p>
+                      {prop.rooms.map(room => {
+                        const roomRes = reservations.filter(r => r.room_id === room.id);
+                        const roomIncome = roomRes.reduce((a, r) => a + (r.price_total || 0), 0);
+                        const roomPaid = roomRes.reduce((a, r) => a + (r.price_paid || 0), 0);
+                        const roomPending = roomIncome - roomPaid;
+                        return (
+                          <div key={room.id} className="flex items-center gap-3">
+                            <div className="flex-1">
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="text-slate-600 font-medium">{room.name}</span>
+                                <span className="text-slate-500">{roomRes.length} res · {roomIncome}€</span>
+                              </div>
+                              <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full" style={{ width: `${propRes.length ? (roomRes.length / propRes.length) * 100 : 0}%`, background: prop.color, opacity: 0.7 }} />
+                              </div>
+                              {roomPending > 0 && <p className="text-[10px] text-[#E05A2B] mt-0.5">Pendiente: {roomPending.toFixed(0)}€</p>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             {/* Por canal */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
@@ -380,26 +454,19 @@ export function AdminPanel() {
               {CHANNELS.map(ch => {
                 const count = reservations.filter(r => r.channel === ch).length;
                 if (count === 0) return null;
+                const income = reservations.filter(r => r.channel === ch).reduce((a, r) => a + (r.price_total || 0), 0);
                 return (
-                  <div key={ch} className="flex items-center gap-3 mb-2">
-                    <span className="text-xs text-slate-600 w-24 flex-shrink-0">{ch}</span>
-                    <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div key={ch} className="mb-3 last:mb-0">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600 font-medium">{ch}</span>
+                      <span className="text-slate-500">{count} res · {income}€</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                       <div className="h-full bg-[#E05A2B] rounded-full" style={{ width: `${(count / reservations.length) * 100}%` }} />
                     </div>
-                    <span className="text-xs font-medium text-slate-700 w-4">{count}</span>
                   </div>
                 );
               })}
-            </div>
-
-            {/* Resumen financiero */}
-            <div className="bg-white rounded-2xl border border-slate-100 p-4">
-              <h3 className="font-semibold text-slate-900 text-sm mb-4">Resumen financiero</h3>
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm"><span className="text-slate-500">Total facturado</span><span className="font-semibold text-slate-900">{reservations.reduce((a, r) => a + (r.price_total || 0), 0)}€</span></div>
-                <div className="flex justify-between text-sm"><span className="text-slate-500">Total cobrado</span><span className="font-semibold text-emerald-600">{totalCobrado.toFixed(0)}€</span></div>
-                <div className="flex justify-between text-sm border-t border-slate-100 pt-2"><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{totalPending.toFixed(0)}€</span></div>
-              </div>
             </div>
           </div>
         )}
@@ -484,12 +551,36 @@ export function AdminPanel() {
                 <button onClick={() => { setShowForm(false); setEditingId(null); setFormError(''); }} className="p-1.5 hover:bg-slate-100 rounded-xl"><X className="w-4 h-4 text-slate-500" /></button>
               </div>
               <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
-                {/* Habitación */}
+                {/* Paso 1: Piso */}
                 <div>
-                  <label className="text-xs font-medium text-slate-600 mb-1 block">Habitación *</label>
-                  <select value={form.room_id} onChange={e => setForm(f => ({ ...f, room_id: Number(e.target.value) }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]">
-                    {PROPERTIES.map(p => <optgroup key={p.id} label={p.name}>{p.rooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>)}
-                  </select>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {PROPERTIES.map(p => (
+                      <button key={p.id} type="button"
+                        onClick={() => {
+                          setSelectedProperty(p.id);
+                          const firstRoom = p.rooms[0];
+                          setForm(f => ({ ...f, room_id: firstRoom.id }));
+                        }}
+                        className="py-2.5 rounded-xl text-xs font-semibold border transition-all"
+                        style={selectedProperty === p.id ? { background: p.color, color: 'white', borderColor: p.color } : { background: 'white', color: '#64748b', borderColor: '#e2e8f0' }}>
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Paso 2: Habitación */}
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Habitación *</label>
+                  <div className="flex flex-wrap gap-2">
+                    {(PROPERTIES.find(p => p.id === selectedProperty)?.rooms || []).map(r => (
+                      <button key={r.id} type="button"
+                        onClick={() => setForm(f => ({ ...f, room_id: r.id }))}
+                        className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${form.room_id === r.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {r.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 {/* Nombre + teléfono */}
                 <div className="grid grid-cols-2 gap-3">
