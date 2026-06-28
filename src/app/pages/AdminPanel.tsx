@@ -41,6 +41,7 @@ const PROPERTIES = [
 const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: p.id, propertyName: p.name, color: p.color, light: p.light })));
 
 const CHANNELS = ['WhatsApp', 'Facebook', 'Airbnb', 'Booking', 'Instagram', 'Directo'];
+const PAYMENT_METHODS = ['Efectivo', 'Depósito bancario', 'PayPal', 'Bizum', 'Tarjeta', 'Otros'];
 const NATIONALITIES = [
   // Europa
   'Alemana', 'Austriaca', 'Belga', 'Búlgara', 'Checa', 'Croata', 'Danesa',
@@ -92,6 +93,7 @@ const emptyForm = {
   price_total: '',
   price_paid: '',
   payment_status: 'pending',
+  payment_method: 'Efectivo',
   channel: 'WhatsApp',
   notes: '',
 };
@@ -252,6 +254,7 @@ export function AdminPanel() {
       price_total: r.price_total?.toString() || '',
       price_paid: r.price_paid?.toString() || '',
       payment_status: r.payment_status,
+      payment_method: (r as any).payment_method || 'Efectivo',
       channel: r.channel || 'WhatsApp',
       notes: r.notes || '',
     });
@@ -614,6 +617,12 @@ export function AdminPanel() {
                           <span className="text-slate-700">{selectedRes.channel}</span>
                         </div>
                       )}
+                      {(selectedRes as any).payment_method && (
+                        <div className="flex items-center gap-3 text-sm">
+                          <span className="w-4 h-4 text-slate-400 flex-shrink-0 text-center text-xs">💳</span>
+                          <span className="text-slate-700">{(selectedRes as any).payment_method}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Pago */}
@@ -774,6 +783,19 @@ export function AdminPanel() {
                           : 'bg-red-100 text-red-600 border-red-300'
                           : 'bg-white text-slate-500 border-slate-200'}`}>
                         {s.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Método de pago</label>
+                  <div className="flex flex-wrap gap-2">
+                    {PAYMENT_METHODS.map(m => (
+                      <button key={m} type="button" onClick={() => setForm(f => ({ ...f, payment_method: m }))}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${form.payment_method === m
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'}`}>
+                        {m}
                       </button>
                     ))}
                   </div>
