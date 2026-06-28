@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -105,6 +105,7 @@ export function AdminPanel() {
         check_in: r.check_in ? r.check_in.split('T')[0] : r.check_in,
         check_out: r.check_out ? r.check_out.split('T')[0] : r.check_out,
         price_total: r.price_total ? Number(r.price_total) : 0,
+        price_per_night: r.price_per_night ? Number(r.price_per_night) : 0,
         price_paid: r.price_paid ? Number(r.price_paid) : 0,
         num_persons: Number(r.num_persons),
       })));
@@ -133,7 +134,7 @@ export function AdminPanel() {
   function handleEdit(r: Reservation) {
     const prop = PROPERTIES.find(p => p.rooms.some(rm => rm.id === r.room_id));
     if (prop) setSelectedProperty(prop.id);
-    setForm({ room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '', guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '', num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '', check_out: r.check_out?.split('T')[0] || '', price_per_night: '', price_total: r.price_total?.toString() || '', price_paid: r.price_paid?.toString() || '', payment_status: r.payment_status, payment_method: r.payment_method || 'Efectivo', channel: r.channel || 'WhatsApp', notes: r.notes || '' });
+    setForm({ room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '', guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '', num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '', check_out: r.check_out?.split('T')[0] || '', price_per_night: (r as any).price_per_night ? (r as any).price_per_night.toString() : '', price_total: r.price_total?.toString() || '', price_paid: r.price_paid?.toString() || '', payment_status: r.payment_status, payment_method: r.payment_method || 'Efectivo', channel: r.channel || 'WhatsApp', notes: r.notes || '' });
     setEditingId(r.id); setSelectedRes(null); setShowForm(true);
   }
 
@@ -158,6 +159,45 @@ export function AdminPanel() {
   const totalCobrado = reservations.reduce((a, r) => a + (r.price_paid || 0), 0);
   const activeNow = reservations.filter(r => r.check_in <= today && r.check_out >= today).length;
   const sorted = [...reservations].sort((a, b) => a.check_in.localeCompare(b.check_in));
+
+  const [pushEnabled, setPushEnabled] = useState(false);
+
+  async function enablePush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      alert('Tu navegador no soporta notificaciones push');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') { alert('Permiso denegado'); return; }
+
+      const reg = await navigator.serviceWorker.ready;
+      const keyRes = await fetch(`${BACKEND_URL}/push/vapid-key`);
+      const { publicKey } = await keyRes.json();
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: publicKey,
+      });
+
+      await fetch(`${BACKEND_URL}/push/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(sub),
+      });
+
+      setPushEnabled(true);
+      alert('✅ Notificaciones activadas');
+    } catch (e) {
+      alert('Error activando notificaciones');
+    }
+  }
+
+  useEffect(() => {
+    if (isLoggedIn && 'Notification' in window) {
+      setPushEnabled(Notification.permission === 'granted');
+    }
+  }, [isLoggedIn]);
 
   if (!isLoggedIn) return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -188,6 +228,10 @@ export function AdminPanel() {
           <div className="flex items-center gap-2">
             <button onClick={() => { setForm(emptyForm); setEditingId(null); setShowForm(true); }} className="flex items-center gap-1.5 bg-[#E05A2B] text-white px-3 py-2 rounded-xl text-xs font-semibold">
               <Plus className="w-3.5 h-3.5" /> Nueva
+            </button>
+            <button onClick={enablePush} title={pushEnabled ? 'Notificaciones activas' : 'Activar notificaciones'}
+              className={`p-2 rounded-xl ${pushEnabled ? 'text-emerald-500 bg-emerald-50' : 'text-slate-400 hover:bg-slate-100'}`}>
+              {pushEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
             </button>
             <button onClick={handleLogout} className="p-2 text-slate-400 rounded-xl hover:bg-slate-100"><LogOut className="w-4 h-4" /></button>
           </div>
