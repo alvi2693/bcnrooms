@@ -164,7 +164,14 @@ export function AdminPanel() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.status === 401) { handleLogout(); return; }
-      setReservations(await res.json());
+      const data = await res.json();
+      // PostgreSQL devuelve numericos como strings — convertir
+      setReservations(data.map((r: any) => ({
+        ...r,
+        price_total: r.price_total ? Number(r.price_total) : 0,
+        price_paid: r.price_paid ? Number(r.price_paid) : 0,
+        num_persons: Number(r.num_persons),
+      })));
     } catch {}
   }
 
