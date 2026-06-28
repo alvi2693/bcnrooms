@@ -120,6 +120,7 @@ export function AdminPanel() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<typeof emptyForm>(emptyForm);
+  const [formError, setFormError] = useState('');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
   const [calendarStart, setCalendarStart] = useState<Date>(() => {
     const d = new Date();
@@ -169,6 +170,7 @@ export function AdminPanel() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setFormError('');
     const room = ALL_ROOMS.find(r => r.id === Number(form.room_id));
     const payload = {
       ...form,
@@ -179,14 +181,20 @@ export function AdminPanel() {
       price_paid: form.price_paid ? Number(form.price_paid) : 0,
     };
     const url = editingId ? `${BACKEND_URL}/admin/reservations/${editingId}` : `${BACKEND_URL}/admin/reservations`;
-    await fetch(url, {
+    const res = await fetch(url, {
       method: editingId ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(payload),
     });
+    const data = await res.json();
+    if (!res.ok) {
+      setFormError(data.error || 'Error al guardar la reserva');
+      return;
+    }
     setShowForm(false);
     setEditingId(null);
     setForm(emptyForm);
+    setFormError('');
     fetchReservations();
   }
 
@@ -659,7 +667,7 @@ export function AdminPanel() {
               onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
                 <h3 className="font-semibold text-slate-900">{editingId ? 'Editar reserva' : 'Nueva reserva'}</h3>
-                <button onClick={() => { setShowForm(false); setEditingId(null); }} className="p-1.5 hover:bg-slate-100 rounded-xl">
+                <button onClick={() => { setShowForm(false); setEditingId(null); setFormError(''); }} className="p-1.5 hover:bg-slate-100 rounded-xl">
                   <X className="w-4 h-4 text-slate-500" />
                 </button>
               </div>
@@ -776,6 +784,11 @@ export function AdminPanel() {
                     className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[#E05A2B] resize-none"
                     placeholder="Info adicional..." />
                 </div>
+                {formError && (
+                  <div className="col-span-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">
+                    ⚠️ {formError}
+                  </div>
+                )}
                 <div className="col-span-2 flex gap-3 pt-2">
                   <button type="button" onClick={() => { setShowForm(false); setEditingId(null); }}
                     className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50">
