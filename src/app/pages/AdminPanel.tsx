@@ -293,7 +293,7 @@ export function AdminPanel() {
     let span = 0;
     for (const d of days) {
       const ds = toDateStr(d);
-      if (ds >= res.check_in && ds < res.check_out) span++;
+      if (ds >= res.check_in && ds <= res.check_out) span++;
     }
     return span;
   }
