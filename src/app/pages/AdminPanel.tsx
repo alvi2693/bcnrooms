@@ -88,6 +88,7 @@ const emptyForm = {
   num_persons: 1,
   check_in: '',
   check_out: '',
+  price_per_night: '',
   price_total: '',
   price_paid: '',
   payment_status: 'pending',
@@ -199,6 +200,36 @@ export function AdminPanel() {
     fetchReservations();
   }
 
+  function calcNights(checkIn: string, checkOut: string): number {
+    if (!checkIn || !checkOut) return 0;
+    return Math.ceil((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86400000);
+  }
+
+  function handlePricePerNight(val: string) {
+    const nights = calcNights(form.check_in, form.check_out);
+    const pn = parseFloat(val) || 0;
+    setForm(f => ({
+      ...f,
+      price_per_night: val,
+      price_total: nights > 0 && pn > 0 ? (pn * nights).toFixed(2) : f.price_total,
+    }));
+  }
+
+  function handleCheckInOut(key: 'check_in' | 'check_out', val: string) {
+    setForm(f => {
+      const updated = { ...f, [key]: val };
+      const nights = calcNights(
+        key === 'check_in' ? val : f.check_in,
+        key === 'check_out' ? val : f.check_out
+      );
+      const pn = parseFloat(f.price_per_night) || 0;
+      return {
+        ...updated,
+        price_total: nights > 0 && pn > 0 ? (pn * nights).toFixed(2) : updated.price_total,
+      };
+    });
+  }
+
   function handleEdit(r: Reservation) {
     setForm({
       room_id: r.room_id,
@@ -209,6 +240,7 @@ export function AdminPanel() {
       num_persons: r.num_persons,
       check_in: r.check_in,
       check_out: r.check_out,
+      price_per_night: '',
       price_total: r.price_total?.toString() || '',
       price_paid: r.price_paid?.toString() || '',
       payment_status: r.payment_status,
@@ -673,22 +705,54 @@ export function AdminPanel() {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Check-in *</label>
-                  <input required type="date" value={form.check_in} onChange={e => setForm(f => ({ ...f, check_in: e.target.value }))}
+                  <input required type="date" value={form.check_in}
+                    onChange={e => handleCheckInOut('check_in', e.target.value)}
                     className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[#E05A2B]" />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Check-out *</label>
-                  <input required type="date" value={form.check_out} onChange={e => setForm(f => ({ ...f, check_out: e.target.value }))}
+                  <input required type="date" value={form.check_out}
+                    onChange={e => handleCheckInOut('check_out', e.target.value)}
                     className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[#E05A2B]" />
                 </div>
+
+                {/* Calculadora precio */}
+                <div className="col-span-2 bg-slate-50 rounded-xl p-4 border border-slate-100">
+                  <p className="text-xs font-semibold text-slate-600 mb-3">💰 Calculadora de precio</p>
+                  <div className="grid grid-cols-3 gap-3 items-end">
+                    <div>
+                      <label className="text-xs text-slate-500 mb-1 block">€ / noche</label>
+                      <input type="number" value={form.price_per_night}
+                        onChange={e => handlePricePerNight(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#E05A2B] bg-white" placeholder="0" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 mb-1 block">Noches</label>
+                      <div className="border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white text-slate-700 font-medium">
+                        {calcNights(form.check_in, form.check_out) || '—'}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 mb-1 block">Total calculado</label>
+                      <div className="border border-[#E05A2B]/40 rounded-xl px-3 py-2 text-sm bg-orange-50 text-[#E05A2B] font-bold">
+                        {form.price_per_night && calcNights(form.check_in, form.check_out)
+                          ? `${(parseFloat(form.price_per_night) * calcNights(form.check_in, form.check_out)).toFixed(0)}€`
+                          : '—'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Precio total (€)</label>
-                  <input type="number" value={form.price_total} onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))}
+                  <input type="number" value={form.price_total}
+                    onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))}
                     className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Cobrado (€)</label>
-                  <input type="number" value={form.price_paid} onChange={e => setForm(f => ({ ...f, price_paid: e.target.value }))}
+                  <input type="number" value={form.price_paid}
+                    onChange={e => setForm(f => ({ ...f, price_paid: e.target.value }))}
                     className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
                 </div>
                 <div className="col-span-2">
