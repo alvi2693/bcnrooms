@@ -41,7 +41,25 @@ const PROPERTIES = [
 const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: p.id, propertyName: p.name, color: p.color, light: p.light })));
 
 const CHANNELS = ['WhatsApp', 'Facebook', 'Airbnb', 'Booking', 'Instagram', 'Directo'];
-const NATIONALITIES = ['Española', 'Francesa', 'Italiana', 'Alemana', 'Inglesa', 'Americana', 'Argentina', 'Mexicana', 'Brasileña', 'Portuguesa', 'Otra'];
+const NATIONALITIES = [
+  // Europa
+  'Alemana', 'Austriaca', 'Belga', 'Búlgara', 'Checa', 'Croata', 'Danesa',
+  'Eslovaca', 'Eslovena', 'Española', 'Estonia', 'Finlandesa', 'Francesa',
+  'Griega', 'Húngara', 'Irlandesa', 'Islandesa', 'Italiana', 'Letona',
+  'Lituana', 'Luxemburguesa', 'Maltesa', 'Neerlandesa', 'Noruega', 'Polaca',
+  'Portuguesa', 'Rumana', 'Sueca', 'Suiza', 'Inglesa', 'Ucraniana', 'Rusa', 'Turca',
+  // América
+  'Americana', 'Argentina', 'Boliviana', 'Brasileña', 'Canadiense', 'Chilena',
+  'Colombiana', 'Costarricense', 'Cubana', 'Dominicana', 'Ecuatoriana',
+  'Guatemalteca', 'Hondureña', 'Mexicana', 'Nicaragüense', 'Panameña',
+  'Paraguaya', 'Peruana', 'Puertorriqueña', 'Salvadoreña', 'Uruguaya', 'Venezolana',
+  // Asia / Oceanía / África
+  'Australiana', 'China', 'Coreana', 'Emiratí', 'Filipina', 'India',
+  'Israelí', 'Japonesa', 'Marroquí', 'Neozelandesa', 'Paquistaní',
+  'Saudí', 'Sudafricana', 'Tailandesa',
+  // Otra
+  'Otra',
+];
 
 interface Reservation {
   id: number;
