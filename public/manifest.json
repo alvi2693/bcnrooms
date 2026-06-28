@@ -1,0 +1,22 @@
+{
+  "name": "BCN Rooms",
+  "short_name": "BCN Rooms",
+  "description": "Panel de gestión de habitaciones en Barcelona",
+  "start_url": "/admin",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#E05A2B",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
