@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2 } from 'lucide-react';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -70,7 +70,7 @@ export function AdminPanel() {
   const [formError, setFormError] = useState('');
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
-  const [activeTab, setActiveTab] = useState<'list' | 'calendar' | 'stats'>('list');
+  const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'stats'>('today');
   const [calendarStart, setCalendarStart] = useState<Date>(() => new Date());
   const DAYS_VISIBLE = 28;
   const COL_W = 48;
@@ -211,6 +211,148 @@ export function AdminPanel() {
 
       {/* Content */}
       <div className="px-4 py-3">
+
+        {/* TODAY VIEW */}
+        {activeTab === 'today' && (() => {
+          const checkinsHoy = reservations.filter(r => r.check_in === today);
+          const checkoutsHoy = reservations.filter(r => r.check_out === today);
+          const activasHoy = reservations.filter(r => r.check_in <= today && r.check_out > today);
+          const urgentePago = reservations.filter(r => {
+            const pending = (r.price_total || 0) - (r.price_paid || 0);
+            return pending > 0 && r.check_in <= today;
+          }).sort((a, b) => ((b.price_total || 0) - (b.price_paid || 0)) - ((a.price_total || 0) - (a.price_paid || 0)));
+
+          return (
+            <div className="space-y-4">
+              {/* Semáforo de habitaciones */}
+              <div className="bg-white rounded-2xl border border-slate-100 p-4">
+                <h3 className="font-semibold text-slate-900 text-sm mb-3">Estado de habitaciones</h3>
+                <div className="space-y-2">
+                  {ALL_ROOMS.map(room => {
+                    const resActiva = reservations.find(r => r.room_id === room.id && r.check_in <= today && r.check_out > today);
+                    const checkinHoy = reservations.find(r => r.room_id === room.id && r.check_in === today);
+                    const checkoutHoy = reservations.find(r => r.room_id === room.id && r.check_out === today);
+                    const prop = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
+
+                    let estado = 'libre';
+                    let badge = { text: 'Libre', bg: 'bg-emerald-100', color: 'text-emerald-700' };
+                    let icon = <CheckCircle className="w-4 h-4 text-emerald-500" />;
+
+                    if (checkinHoy) {
+                      estado = 'checkin';
+                      badge = { text: `Check-in · ${checkinHoy.guest_name}`, bg: 'bg-blue-100', color: 'text-blue-700' };
+                      icon = <AlertCircle className="w-4 h-4 text-blue-500" />;
+                    } else if (checkoutHoy) {
+                      estado = 'checkout';
+                      badge = { text: `Check-out · ${checkoutHoy.guest_name}`, bg: 'bg-yellow-100', color: 'text-yellow-700' };
+                      icon = <Clock className="w-4 h-4 text-yellow-500" />;
+                    } else if (resActiva) {
+                      estado = 'ocupada';
+                      badge = { text: `Ocupada · ${resActiva.guest_name}`, bg: 'bg-red-100', color: 'text-red-600' };
+                      icon = <AlertCircle className="w-4 h-4 text-red-400" />;
+                    }
+
+                    return (
+                      <div key={room.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors"
+                        onClick={() => resActiva && setSelectedRes(resActiva)}>
+                        <div className="w-2 h-8 rounded-full flex-shrink-0" style={{ background: prop?.color || '#999' }} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-semibold text-slate-700">{room.name}</p>
+                          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${badge.bg} ${badge.color}`}>{badge.text}</span>
+                        </div>
+                        {icon}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Check-ins hoy */}
+              {checkinsHoy.length > 0 && (
+                <div className="bg-white rounded-2xl border border-blue-100 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <AlertCircle className="w-4 h-4 text-blue-500" />
+                    <h3 className="font-semibold text-slate-900 text-sm">Check-in hoy ({checkinsHoy.length})</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {checkinsHoy.map(r => {
+                      const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
+                      const nights = calcNights(r.check_in, r.check_out);
+                      return (
+                        <div key={r.id} className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl cursor-pointer" onClick={() => setSelectedRes(r)}>
+                          <div className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">{r.guest_name}</p>
+                            <p className="text-xs text-slate-500">{room?.name} · {nights} noches · {r.num_persons} pers.</p>
+                          </div>
+                          <span className="text-xs font-bold text-slate-700">{r.price_total || 0}€</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Check-outs hoy */}
+              {checkoutsHoy.length > 0 && (
+                <div className="bg-white rounded-2xl border border-yellow-100 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Clock className="w-4 h-4 text-yellow-500" />
+                    <h3 className="font-semibold text-slate-900 text-sm">Check-out hoy ({checkoutsHoy.length})</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {checkoutsHoy.map(r => {
+                      const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
+                      const pending = (r.price_total || 0) - (r.price_paid || 0);
+                      return (
+                        <div key={r.id} className="flex items-center gap-3 p-3 bg-yellow-50 rounded-xl cursor-pointer" onClick={() => setSelectedRes(r)}>
+                          <div className="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">{r.guest_name}</p>
+                            <p className="text-xs text-slate-500">{room?.name}</p>
+                          </div>
+                          {pending > 0 && <span className="text-xs font-bold text-[#E05A2B]">{pending.toFixed(0)}€ pendiente</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Cobros urgentes */}
+              {urgentePago.length > 0 && (
+                <div className="bg-white rounded-2xl border border-orange-100 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <AlertCircle className="w-4 h-4 text-[#E05A2B]" />
+                    <h3 className="font-semibold text-slate-900 text-sm">Cobros pendientes ({urgentePago.length})</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {urgentePago.slice(0, 5).map(r => {
+                      const pending = (r.price_total || 0) - (r.price_paid || 0);
+                      const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
+                      return (
+                        <div key={r.id} className="flex items-center gap-3 p-3 bg-orange-50 rounded-xl cursor-pointer" onClick={() => setSelectedRes(r)}>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-900">{r.guest_name}</p>
+                            <p className="text-xs text-slate-500">{room?.propertyName} · {r.payment_method || 'Efectivo'}</p>
+                          </div>
+                          <span className="text-sm font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {checkinsHoy.length === 0 && checkoutsHoy.length === 0 && urgentePago.length === 0 && (
+                <div className="bg-white rounded-2xl border border-slate-100 p-6 text-center">
+                  <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                  <p className="text-slate-500 text-sm">Todo tranquilo hoy</p>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* LIST VIEW */}
         {activeTab === 'list' && (
@@ -495,6 +637,7 @@ export function AdminPanel() {
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 z-40">
         <div className="flex">
           {[
+            { id: 'today', icon: Home, label: 'Hoy' },
             { id: 'list', icon: LayoutList, label: 'Reservas' },
             { id: 'calendar', icon: CalendarDays, label: 'Calendario' },
             { id: 'stats', icon: BarChart2, label: 'Stats' },
