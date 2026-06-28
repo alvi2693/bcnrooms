@@ -71,7 +71,7 @@ export function AdminPanel() {
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
   const [activeTab, setActiveTab] = useState<'list' | 'calendar' | 'stats'>('list');
-  const [calendarStart, setCalendarStart] = useState<Date>(() => { const d = new Date(); d.setDate(d.getDate() - 3); return d; });
+  const [calendarStart, setCalendarStart] = useState<Date>(() => new Date());
   const DAYS_VISIBLE = 28;
   const COL_W = 48;
   const ROW_H = 50;
@@ -273,7 +273,7 @@ export function AdminPanel() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
               <button onClick={() => setCalendarStart(addDays(calendarStart, -7))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronLeft className="w-4 h-4" /></button>
               <div className="flex items-center gap-2">
-                <button onClick={() => { const d = new Date(); d.setDate(d.getDate() - 3); setCalendarStart(d); }} className="text-xs px-2 py-1 bg-slate-100 rounded-lg text-slate-600 font-medium">Hoy</button>
+                <button onClick={() => setCalendarStart(new Date())} className="text-xs px-2 py-1 bg-slate-100 rounded-lg text-slate-600 font-medium">Hoy</button>
                 <span className="text-xs font-semibold text-slate-700">{fmtDate(toDateStr(days[0]))} — {fmtDate(toDateStr(days[days.length-1]))}</span>
               </div>
               <button onClick={() => setCalendarStart(addDays(calendarStart, 7))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronRight className="w-4 h-4" /></button>
