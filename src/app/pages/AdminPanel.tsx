@@ -20,11 +20,11 @@ const PROPERTIES = [
     color: '#10B981',
     light: '#ECFDF5',
     rooms: [
-      { id: 2, name: 'Hab. 1 (Mediana)', type: 'medium' },
-      { id: 3, name: 'Hab. 2 (Mediana)', type: 'medium' },
-      { id: 4, name: 'Hab. 3 (Mediana)', type: 'medium' },
-      { id: 5, name: 'Hab. 4 (Doble)', type: 'double' },
-      { id: 6, name: 'Hab. 5 (Doble)', type: 'double' },
+      { id: 5, name: 'Hab. 1 (Doble)', type: 'double' },
+      { id: 6, name: 'Hab. 2 (Doble)', type: 'double' },
+      { id: 2, name: 'Hab. 3 (Mediana)', type: 'medium' },
+      { id: 3, name: 'Hab. 4 (Mediana)', type: 'medium' },
+      { id: 4, name: 'Hab. 5 (Mediana)', type: 'medium' },
     ]
   },
   {
