@@ -109,7 +109,8 @@ function toDateStr(date: Date): string {
 }
 
 function formatDate(str: string): string {
-  const d = new Date(str + 'T00:00:00');
+  if (!str) return '';
+  const d = new Date(str.split('T')[0] + 'T00:00:00');
   return d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
 }
 
@@ -168,6 +169,8 @@ export function AdminPanel() {
       // PostgreSQL devuelve numericos como strings — convertir
       setReservations(data.map((r: any) => ({
         ...r,
+        check_in: r.check_in ? r.check_in.split('T')[0] : r.check_in,
+        check_out: r.check_out ? r.check_out.split('T')[0] : r.check_out,
         price_total: r.price_total ? Number(r.price_total) : 0,
         price_paid: r.price_paid ? Number(r.price_paid) : 0,
         num_persons: Number(r.num_persons),
@@ -248,6 +251,7 @@ export function AdminPanel() {
   }
 
   function handleEdit(r: Reservation) {
+    const formatDate = (d: string) => d ? d.split('T')[0] : '';
     setForm({
       room_id: r.room_id,
       guest_name: r.guest_name,
@@ -255,8 +259,8 @@ export function AdminPanel() {
       guest_phone: r.guest_phone || '',
       guest_nationality: r.guest_nationality || '',
       num_persons: r.num_persons,
-      check_in: r.check_in,
-      check_out: r.check_out,
+      check_in: formatDate(r.check_in),
+      check_out: formatDate(r.check_out),
       price_per_night: '',
       price_total: r.price_total?.toString() || '',
       price_paid: r.price_paid?.toString() || '',
