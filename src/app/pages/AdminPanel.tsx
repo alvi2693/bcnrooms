@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff } from 'lucide-react';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -18,7 +18,8 @@ const PROPERTIES = [
 
 const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: p.id, propertyName: p.name, color: p.color, light: p.light })));
 const CHANNELS = ['WhatsApp', 'Facebook', 'Airbnb', 'Booking', 'Instagram', 'Directo'];
-const PAYMENT_METHODS = ['Efectivo', 'Depósito bancario', 'PayPal', 'Bizum', 'Tarjeta', 'Otros'];
+const PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Depósito bancario', 'PayPal', 'Bizum', 'Tarjeta', 'Otros'];
+const EXPENSE_CATEGORIES = ['🛋️ Mobiliario', '🔧 Mantenimiento', '🧹 Limpieza', '💡 Suministros', '🏠 Alquiler/Hipoteca', '📦 Equipamiento', '📋 Otros'];
 const NATIONALITIES = [
   'Alemana','Austriaca','Belga','Búlgara','Checa','Croata','Danesa','Eslovaca','Eslovena','Española',
   'Estonia','Finlandesa','Francesa','Griega','Húngara','Irlandesa','Islandesa','Italiana','Letona',
@@ -39,11 +40,21 @@ interface Reservation {
   payment_method?: string; channel?: string; notes?: string;
 }
 
+interface Expense {
+  id: number; property_id: string; property_name: string;
+  category: string; description: string; amount: number; date: string;
+}
+
 const emptyForm = {
   room_id: 1, guest_name: '', guest_email: '', guest_phone: '',
   guest_nationality: '', num_persons: 1, check_in: '', check_out: '',
   price_per_night: '', price_total: '', price_paid: '',
   payment_status: 'pending', payment_method: 'Efectivo', channel: 'WhatsApp', notes: '',
+};
+
+const emptyExpenseForm = {
+  property_id: 'sagrera', category: '🔧 Mantenimiento',
+  description: '', amount: '', date: new Date().toISOString().split('T')[0],
 };
 
 function addDays(date: Date, days: number): Date { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
@@ -58,23 +69,60 @@ function calcNights(a: string, b: string): number {
   return Math.ceil((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
 }
 
+function NationalitySearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const filtered = NATIONALITIES.filter(n => n.toLowerCase().includes(query.toLowerCase()));
+  useEffect(() => {
+    function handle(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <div className="flex items-center border border-slate-200 rounded-xl px-3 py-3 gap-2 bg-white cursor-text" onClick={() => setOpen(true)}>
+        <Search className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+        <input className="flex-1 text-sm outline-none bg-transparent" placeholder={value || 'Buscar...'}
+          value={open ? query : value}
+          onChange={e => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)} />
+      </div>
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+          {filtered.map(n => (
+            <div key={n} className={`px-4 py-2.5 text-sm cursor-pointer hover:bg-slate-50 ${value === n ? 'font-semibold text-[#E05A2B]' : 'text-slate-700'}`}
+              onMouseDown={() => { onChange(n); setQuery(''); setOpen(false); }}>{n}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AdminPanel() {
   const [token, setToken] = useState(() => localStorage.getItem('admin_token') || '');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [showForm, setShowForm] = useState(false);
+  const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
   const [form, setForm] = useState<typeof emptyForm>(emptyForm);
+  const [expenseForm, setExpenseForm] = useState(emptyExpenseForm);
   const [formError, setFormError] = useState('');
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
-  const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'stats'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'expenses' | 'stats'>('today');
   const [calendarStart, setCalendarStart] = useState<Date>(() => new Date());
-  const DAYS_VISIBLE = 28;
-  const COL_W = 48;
-  const ROW_H = 50;
+  const [pushEnabled, setPushEnabled] = useState(false);
+
+  const DAYS_VISIBLE = 14;
+  const COL_W = 52;
+  const ROW_H = 52;
   const LABEL_W = 140;
   const today = toDateStr(new Date());
   const isLoggedIn = !!token;
@@ -112,12 +160,26 @@ export function AdminPanel() {
     } catch {}
   }
 
-  useEffect(() => { if (isLoggedIn) fetchReservations(); }, [isLoggedIn]);
+  async function fetchExpenses() {
+    try {
+      const res = await fetch(`${BACKEND_URL}/admin/expenses`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      setExpenses(data.map((e: any) => ({ ...e, amount: Number(e.amount), date: e.date?.split('T')[0] || e.date })));
+    } catch {}
+  }
+
+  useEffect(() => { if (isLoggedIn) { fetchReservations(); fetchExpenses(); } }, [isLoggedIn]);
+  useEffect(() => { if (isLoggedIn && 'Notification' in window) setPushEnabled(Notification.permission === 'granted'); }, [isLoggedIn]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setFormError('');
     const room = ALL_ROOMS.find(r => r.id === Number(form.room_id));
-    const payload = { ...form, room_id: Number(form.room_id), room_name: room ? `${room.propertyName} - ${room.name}` : '', num_persons: Number(form.num_persons), price_total: form.price_total ? Number(form.price_total) : null, price_paid: form.price_paid ? Number(form.price_paid) : 0 };
+    const pricePaid = Number(form.price_paid) || 0;
+    const priceTotal = form.price_total ? Number(form.price_total) : null;
+    let paymentStatus = 'pending';
+    if (priceTotal && pricePaid >= priceTotal) paymentStatus = 'paid';
+    else if (pricePaid > 0) paymentStatus = 'partial';
+    const payload = { ...form, room_id: Number(form.room_id), room_name: room ? `${room.propertyName} - ${room.name}` : '', num_persons: Number(form.num_persons), price_total: priceTotal, price_paid: pricePaid, payment_status: paymentStatus };
     const url = editingId ? `${BACKEND_URL}/admin/reservations/${editingId}` : `${BACKEND_URL}/admin/reservations`;
     const res = await fetch(url, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
     const data = await res.json();
@@ -134,8 +196,28 @@ export function AdminPanel() {
   function handleEdit(r: Reservation) {
     const prop = PROPERTIES.find(p => p.rooms.some(rm => rm.id === r.room_id));
     if (prop) setSelectedProperty(prop.id);
-    setForm({ room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '', guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '', num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '', check_out: r.check_out?.split('T')[0] || '', price_per_night: (r as any).price_per_night ? (r as any).price_per_night.toString() : '', price_total: r.price_total?.toString() || '', price_paid: r.price_paid?.toString() || '', payment_status: r.payment_status, payment_method: r.payment_method || 'Efectivo', channel: r.channel || 'WhatsApp', notes: r.notes || '' });
+    setForm({ room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '', guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '', num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '', check_out: r.check_out?.split('T')[0] || '', price_per_night: (r as any).price_per_night?.toString() || '', price_total: r.price_total?.toString() || '', price_paid: r.price_paid?.toString() || '', payment_status: r.payment_status, payment_method: r.payment_method || 'Efectivo', channel: r.channel || 'WhatsApp', notes: r.notes || '' });
     setEditingId(r.id); setSelectedRes(null); setShowForm(true);
+  }
+
+  async function handleExpenseSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const prop = PROPERTIES.find(p => p.id === expenseForm.property_id);
+    const payload = { ...expenseForm, property_name: prop?.name || '', amount: Number(expenseForm.amount) };
+    const url = editingExpenseId ? `${BACKEND_URL}/admin/expenses/${editingExpenseId}` : `${BACKEND_URL}/admin/expenses`;
+    await fetch(url, { method: editingExpenseId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
+    setShowExpenseForm(false); setEditingExpenseId(null); setExpenseForm(emptyExpenseForm); fetchExpenses();
+  }
+
+  async function handleExpenseDelete(id: number) {
+    if (!confirm('¿Eliminar este gasto?')) return;
+    await fetch(`${BACKEND_URL}/admin/expenses/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    fetchExpenses();
+  }
+
+  function handleExpenseEdit(ex: Expense) {
+    setExpenseForm({ property_id: ex.property_id, category: ex.category, description: ex.description, amount: ex.amount.toString(), date: ex.date });
+    setEditingExpenseId(ex.id); setShowExpenseForm(true);
   }
 
   function handlePPN(val: string) {
@@ -155,49 +237,24 @@ export function AdminPanel() {
   function getResStartCol(res: Reservation): number { return days.findIndex(d => toDateStr(d) >= res.check_in); }
   function getResSpan(res: Reservation): number { let s = 0; for (const d of days) { const ds = toDateStr(d); if (ds >= res.check_in && ds <= res.check_out) s++; } return s; }
 
+  async function enablePush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) { alert('Tu navegador no soporta notificaciones push'); return; }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') { alert('Permiso denegado'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const keyRes = await fetch(`${BACKEND_URL}/push/vapid-key`);
+      const { publicKey } = await keyRes.json();
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+      await fetch(`${BACKEND_URL}/push/subscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(sub) });
+      setPushEnabled(true); alert('✅ Notificaciones activadas');
+    } catch { alert('Error activando notificaciones'); }
+  }
+
   const totalPending = reservations.reduce((a, r) => a + ((r.price_total || 0) - (r.price_paid || 0)), 0);
   const totalCobrado = reservations.reduce((a, r) => a + (r.price_paid || 0), 0);
   const activeNow = reservations.filter(r => r.check_in <= today && r.check_out >= today).length;
   const sorted = [...reservations].sort((a, b) => a.check_in.localeCompare(b.check_in));
-
-  const [pushEnabled, setPushEnabled] = useState(false);
-
-  async function enablePush() {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      alert('Tu navegador no soporta notificaciones push');
-      return;
-    }
-    try {
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') { alert('Permiso denegado'); return; }
-
-      const reg = await navigator.serviceWorker.ready;
-      const keyRes = await fetch(`${BACKEND_URL}/push/vapid-key`);
-      const { publicKey } = await keyRes.json();
-
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: publicKey,
-      });
-
-      await fetch(`${BACKEND_URL}/push/subscribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(sub),
-      });
-
-      setPushEnabled(true);
-      alert('✅ Notificaciones activadas');
-    } catch (e) {
-      alert('Error activando notificaciones');
-    }
-  }
-
-  useEffect(() => {
-    if (isLoggedIn && 'Notification' in window) {
-      setPushEnabled(Notification.permission === 'granted');
-    }
-  }, [isLoggedIn]);
 
   if (!isLoggedIn) return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -218,7 +275,6 @@ export function AdminPanel() {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-20">
-      {/* Header */}
       <header className="bg-white border-b border-slate-100 sticky top-0 z-40">
         <div className="px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -229,8 +285,7 @@ export function AdminPanel() {
             <button onClick={() => { setForm(emptyForm); setEditingId(null); setShowForm(true); }} className="flex items-center gap-1.5 bg-[#E05A2B] text-white px-3 py-2 rounded-xl text-xs font-semibold">
               <Plus className="w-3.5 h-3.5" /> Nueva
             </button>
-            <button onClick={enablePush} title={pushEnabled ? 'Notificaciones activas' : 'Activar notificaciones'}
-              className={`p-2 rounded-xl ${pushEnabled ? 'text-emerald-500 bg-emerald-50' : 'text-slate-400 hover:bg-slate-100'}`}>
+            <button onClick={enablePush} className={`p-2 rounded-xl ${pushEnabled ? 'text-emerald-500 bg-emerald-50' : 'text-slate-400 hover:bg-slate-100'}`}>
               {pushEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
             </button>
             <button onClick={handleLogout} className="p-2 text-slate-400 rounded-xl hover:bg-slate-100"><LogOut className="w-4 h-4" /></button>
@@ -238,7 +293,6 @@ export function AdminPanel() {
         </div>
       </header>
 
-      {/* Stats row */}
       <div className="px-4 pt-4 pb-2 grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
           { l: 'Reservas', v: reservations.length, c: 'text-slate-900' },
@@ -253,22 +307,16 @@ export function AdminPanel() {
         ))}
       </div>
 
-      {/* Content */}
       <div className="px-4 py-3">
 
-        {/* TODAY VIEW */}
+        {/* TODAY */}
         {activeTab === 'today' && (() => {
           const checkinsHoy = reservations.filter(r => r.check_in === today);
           const checkoutsHoy = reservations.filter(r => r.check_out === today);
-          const activasHoy = reservations.filter(r => r.check_in <= today && r.check_out > today);
-          const urgentePago = reservations.filter(r => {
-            const pending = (r.price_total || 0) - (r.price_paid || 0);
-            return pending > 0 && r.check_in <= today;
-          }).sort((a, b) => ((b.price_total || 0) - (b.price_paid || 0)) - ((a.price_total || 0) - (a.price_paid || 0)));
-
+          const urgentePago = reservations.filter(r => ((r.price_total || 0) - (r.price_paid || 0)) > 0 && r.check_in <= today)
+            .sort((a, b) => ((b.price_total || 0) - (b.price_paid || 0)) - ((a.price_total || 0) - (a.price_paid || 0)));
           return (
             <div className="space-y-4">
-              {/* Semáforo de habitaciones */}
               <div className="bg-white rounded-2xl border border-slate-100 p-4">
                 <h3 className="font-semibold text-slate-900 text-sm mb-3">Estado de habitaciones</h3>
                 <div className="space-y-2">
@@ -277,28 +325,13 @@ export function AdminPanel() {
                     const checkinHoy = reservations.find(r => r.room_id === room.id && r.check_in === today);
                     const checkoutHoy = reservations.find(r => r.room_id === room.id && r.check_out === today);
                     const prop = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
-
-                    let estado = 'libre';
                     let badge = { text: 'Libre', bg: 'bg-emerald-100', color: 'text-emerald-700' };
                     let icon = <CheckCircle className="w-4 h-4 text-emerald-500" />;
-
-                    if (checkinHoy) {
-                      estado = 'checkin';
-                      badge = { text: `Check-in · ${checkinHoy.guest_name}`, bg: 'bg-blue-100', color: 'text-blue-700' };
-                      icon = <AlertCircle className="w-4 h-4 text-blue-500" />;
-                    } else if (checkoutHoy) {
-                      estado = 'checkout';
-                      badge = { text: `Check-out · ${checkoutHoy.guest_name}`, bg: 'bg-yellow-100', color: 'text-yellow-700' };
-                      icon = <Clock className="w-4 h-4 text-yellow-500" />;
-                    } else if (resActiva) {
-                      estado = 'ocupada';
-                      badge = { text: `Ocupada · ${resActiva.guest_name}`, bg: 'bg-red-100', color: 'text-red-600' };
-                      icon = <AlertCircle className="w-4 h-4 text-red-400" />;
-                    }
-
+                    if (checkinHoy) { badge = { text: `Check-in · ${checkinHoy.guest_name}`, bg: 'bg-blue-100', color: 'text-blue-700' }; icon = <AlertCircle className="w-4 h-4 text-blue-500" />; }
+                    else if (checkoutHoy) { badge = { text: `Check-out · ${checkoutHoy.guest_name}`, bg: 'bg-yellow-100', color: 'text-yellow-700' }; icon = <Clock className="w-4 h-4 text-yellow-500" />; }
+                    else if (resActiva) { badge = { text: `Ocupada · ${resActiva.guest_name}`, bg: 'bg-red-100', color: 'text-red-600' }; icon = <AlertCircle className="w-4 h-4 text-red-400" />; }
                     return (
-                      <div key={room.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors"
-                        onClick={() => resActiva && setSelectedRes(resActiva)}>
+                      <div key={room.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => resActiva && setSelectedRes(resActiva)}>
                         <div className="w-2 h-8 rounded-full flex-shrink-0" style={{ background: prop?.color || '#999' }} />
                         <div className="flex-1 min-w-0">
                           <p className="text-xs font-semibold text-slate-700">{room.name}</p>
@@ -310,24 +343,18 @@ export function AdminPanel() {
                   })}
                 </div>
               </div>
-
-              {/* Check-ins hoy */}
               {checkinsHoy.length > 0 && (
                 <div className="bg-white rounded-2xl border border-blue-100 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <AlertCircle className="w-4 h-4 text-blue-500" />
-                    <h3 className="font-semibold text-slate-900 text-sm">Check-in hoy ({checkinsHoy.length})</h3>
-                  </div>
+                  <div className="flex items-center gap-2 mb-3"><AlertCircle className="w-4 h-4 text-blue-500" /><h3 className="font-semibold text-slate-900 text-sm">Check-in hoy ({checkinsHoy.length})</h3></div>
                   <div className="space-y-2">
                     {checkinsHoy.map(r => {
                       const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
-                      const nights = calcNights(r.check_in, r.check_out);
                       return (
                         <div key={r.id} className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl cursor-pointer" onClick={() => setSelectedRes(r)}>
                           <div className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-slate-900">{r.guest_name}</p>
-                            <p className="text-xs text-slate-500">{room?.name} · {nights} noches · {r.num_persons} pers.</p>
+                            <p className="text-xs text-slate-500">{room?.name} · {calcNights(r.check_in, r.check_out)} noches · {r.num_persons} pers.</p>
                           </div>
                           <span className="text-xs font-bold text-slate-700">{r.price_total || 0}€</span>
                         </div>
@@ -336,14 +363,9 @@ export function AdminPanel() {
                   </div>
                 </div>
               )}
-
-              {/* Check-outs hoy */}
               {checkoutsHoy.length > 0 && (
                 <div className="bg-white rounded-2xl border border-yellow-100 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Clock className="w-4 h-4 text-yellow-500" />
-                    <h3 className="font-semibold text-slate-900 text-sm">Check-out hoy ({checkoutsHoy.length})</h3>
-                  </div>
+                  <div className="flex items-center gap-2 mb-3"><Clock className="w-4 h-4 text-yellow-500" /><h3 className="font-semibold text-slate-900 text-sm">Check-out hoy ({checkoutsHoy.length})</h3></div>
                   <div className="space-y-2">
                     {checkoutsHoy.map(r => {
                       const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
@@ -362,14 +384,9 @@ export function AdminPanel() {
                   </div>
                 </div>
               )}
-
-              {/* Cobros urgentes */}
               {urgentePago.length > 0 && (
                 <div className="bg-white rounded-2xl border border-orange-100 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <AlertCircle className="w-4 h-4 text-[#E05A2B]" />
-                    <h3 className="font-semibold text-slate-900 text-sm">Cobros pendientes ({urgentePago.length})</h3>
-                  </div>
+                  <div className="flex items-center gap-2 mb-3"><AlertCircle className="w-4 h-4 text-[#E05A2B]" /><h3 className="font-semibold text-slate-900 text-sm">Cobros pendientes ({urgentePago.length})</h3></div>
                   <div className="space-y-2">
                     {urgentePago.slice(0, 5).map(r => {
                       const pending = (r.price_total || 0) - (r.price_paid || 0);
@@ -387,7 +404,6 @@ export function AdminPanel() {
                   </div>
                 </div>
               )}
-
               {checkinsHoy.length === 0 && checkoutsHoy.length === 0 && urgentePago.length === 0 && (
                 <div className="bg-white rounded-2xl border border-slate-100 p-6 text-center">
                   <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
@@ -398,7 +414,7 @@ export function AdminPanel() {
           );
         })()}
 
-        {/* LIST VIEW */}
+        {/* LIST */}
         {activeTab === 'list' && (
           <div className="space-y-3">
             {sorted.length === 0 && (
@@ -412,6 +428,7 @@ export function AdminPanel() {
               const pending = (r.price_total || 0) - (r.price_paid || 0);
               const isActive = r.check_in <= today && r.check_out >= today;
               const isPast = r.check_out < today;
+              const isPaid = pending <= 0 && (r.price_total || 0) > 0;
               return (
                 <motion.div key={r.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
                   className={`bg-white rounded-2xl border p-4 cursor-pointer ${isPast ? 'opacity-60 border-slate-100' : 'border-slate-100'}`}
@@ -424,14 +441,11 @@ export function AdminPanel() {
                           <span className="font-semibold text-slate-900 text-sm">{r.guest_name}</span>
                           {isActive && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">Activo</span>}
                           {isPast && <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Pasado</span>}
+                          {isPaid && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">✓ Pagado</span>}
                         </div>
                         <div className="flex gap-1 flex-shrink-0">
-                          <button onClick={e => { e.stopPropagation(); handleEdit(r); }} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg">
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button onClick={e => { e.stopPropagation(); handleDelete(r.id); }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <button onClick={e => { e.stopPropagation(); handleEdit(r); }} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={e => { e.stopPropagation(); handleDelete(r.id); }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
                       <p className="text-xs text-slate-400 mb-2">{room?.propertyName} · {room?.name}</p>
@@ -453,20 +467,19 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* CALENDAR VIEW */}
+        {/* CALENDAR */}
         {activeTab === 'calendar' && (
           <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-              <button onClick={() => setCalendarStart(addDays(calendarStart, -7))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronLeft className="w-4 h-4" /></button>
+            <div className="flex items-center justify-between px-3 py-3 border-b border-slate-100">
+              <button onClick={() => setCalendarStart(addDays(calendarStart, -14))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronLeft className="w-4 h-4" /></button>
               <div className="flex items-center gap-2">
-                <button onClick={() => setCalendarStart(new Date())} className="text-xs px-2 py-1 bg-slate-100 rounded-lg text-slate-600 font-medium">Hoy</button>
+                <button onClick={() => setCalendarStart(new Date())} className="text-xs px-2 py-1 bg-[#E05A2B] text-white rounded-lg font-medium">Hoy</button>
                 <span className="text-xs font-semibold text-slate-700">{fmtDate(toDateStr(days[0]))} — {fmtDate(toDateStr(days[days.length-1]))}</span>
               </div>
-              <button onClick={() => setCalendarStart(addDays(calendarStart, 7))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronRight className="w-4 h-4" /></button>
+              <button onClick={() => setCalendarStart(addDays(calendarStart, 14))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronRight className="w-4 h-4" /></button>
             </div>
             <div className="overflow-x-auto">
               <div style={{ minWidth: LABEL_W + COL_W * DAYS_VISIBLE }}>
-                {/* Day headers */}
                 <div className="flex border-b border-slate-100" style={{ paddingLeft: LABEL_W }}>
                   {days.map((d, i) => {
                     const ds = toDateStr(d), isToday = ds === today, isWE = d.getDay() === 0 || d.getDay() === 6;
@@ -479,7 +492,6 @@ export function AdminPanel() {
                     );
                   })}
                 </div>
-                {/* Property rows */}
                 {PROPERTIES.map(prop => (
                   <div key={prop.id}>
                     <div className="flex items-center border-b border-slate-100" style={{ background: prop.light }}>
@@ -489,10 +501,7 @@ export function AdminPanel() {
                       <div className="flex-1 border-l border-slate-100" style={{ height: 24 }} />
                     </div>
                     {prop.rooms.map(room => {
-                      const visibleRes = reservations.filter(r => {
-                        if (r.room_id !== room.id) return false;
-                        return r.check_in <= toDateStr(days[days.length-1]) && r.check_out >= toDateStr(days[0]);
-                      });
+                      const visibleRes = reservations.filter(r => r.room_id === room.id && r.check_in <= toDateStr(days[days.length-1]) && r.check_out >= toDateStr(days[0]));
                       return (
                         <div key={room.id} className="flex border-b border-slate-100 relative" style={{ height: ROW_H }}>
                           <div style={{ width: LABEL_W, minWidth: LABEL_W }} className="flex items-center px-3 border-r border-slate-100 bg-white z-10">
@@ -510,19 +519,14 @@ export function AdminPanel() {
                                   <div key={i} style={{ width: COL_W, minWidth: COL_W }}
                                     onClick={() => {
                                       if (!hasRes) {
-                                        const prop = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
-                                        if (prop) setSelectedProperty(prop.id);
+                                        const p = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
+                                        if (p) setSelectedProperty(p.id);
                                         setForm(f => ({ ...emptyForm, room_id: room.id, check_in: ds }));
-                                        setEditingId(null);
-                                        setShowForm(true);
+                                        setEditingId(null); setShowForm(true);
                                       }
                                     }}
                                     className={`h-full border-r border-slate-100 group ${!hasRes ? 'cursor-pointer hover:bg-blue-50/40' : ''} ${isToday ? 'bg-orange-50/50' : isWE ? 'bg-slate-50/30' : ''}`}>
-                                    {!hasRes && (
-                                      <div className="h-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <span className="text-[10px] text-slate-400">+</span>
-                                      </div>
-                                    )}
+                                    {!hasRes && <div className="h-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-[10px] text-slate-400">+</span></div>}
                                   </div>
                                 );
                               })}
@@ -531,12 +535,15 @@ export function AdminPanel() {
                               const sc = getResStartCol(res), span = getResSpan(res);
                               if (sc < 0 || span === 0) return null;
                               const pending = (res.price_total || 0) - (res.price_paid || 0);
+                              const isPaid = pending <= 0 && (res.price_total || 0) > 0;
                               return (
                                 <button key={res.id} onClick={() => setSelectedRes(res)}
                                   className="absolute top-1.5 bottom-1.5 rounded-lg flex items-center px-2 gap-1 text-white text-[11px] font-medium shadow-sm hover:opacity-90 truncate"
                                   style={{ left: sc * COL_W + 2, width: span * COL_W - 4, background: prop.color, zIndex: 10 }}>
                                   <span className="truncate">{res.guest_name}</span>
-                                  {pending > 0 && <span className="flex-shrink-0 bg-white/25 rounded px-1 text-[9px]">{pending.toFixed(0)}€</span>}
+                                  {isPaid
+                                    ? <span className="flex-shrink-0 bg-white/30 rounded px-1 text-[9px]">✓</span>
+                                    : <span className="flex-shrink-0 bg-white/25 rounded px-1 text-[9px]">{pending.toFixed(0)}€</span>}
                                 </button>
                               );
                             })}
@@ -551,10 +558,70 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* STATS VIEW */}
+        {/* EXPENSES */}
+        {activeTab === 'expenses' && (
+          <div className="space-y-4">
+            {PROPERTIES.map(prop => {
+              const propIncome = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id)).reduce((a, r) => a + (r.price_paid || 0), 0);
+              const propCost = expenses.filter(e => e.property_id === prop.id).reduce((a, e) => a + e.amount, 0);
+              const neto = propIncome - propCost;
+              return (
+                <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-3 h-3 rounded-full" style={{ background: prop.color }} />
+                    <h3 className="font-semibold text-slate-900 text-sm">{prop.name}</h3>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Ingresos</p><p className="text-sm font-bold text-emerald-600">{propIncome}€</p></div>
+                    <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Gastos</p><p className="text-sm font-bold text-red-500">{propCost}€</p></div>
+                    <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Neto</p><p className={`text-sm font-bold ${neto >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{neto}€</p></div>
+                  </div>
+                </div>
+              );
+            })}
+            <button onClick={() => { setExpenseForm(emptyExpenseForm); setEditingExpenseId(null); setShowExpenseForm(true); }}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-white border border-dashed border-slate-300 rounded-2xl text-sm text-slate-500 hover:border-[#E05A2B] hover:text-[#E05A2B] transition-colors">
+              <Plus className="w-4 h-4" /> Añadir gasto
+            </button>
+            {PROPERTIES.map(prop => {
+              const propExpenses = expenses.filter(e => e.property_id === prop.id);
+              if (propExpenses.length === 0) return null;
+              return (
+                <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-100" style={{ background: prop.light }}>
+                    <span className="text-xs font-bold uppercase tracking-wide" style={{ color: prop.color }}>{prop.name}</span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {propExpenses.map(ex => (
+                      <div key={ex.id} className="flex items-center gap-3 p-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-xs text-slate-500">{ex.category}</span>
+                            <span className="text-[10px] text-slate-400">{fmtDate(ex.date)}</span>
+                          </div>
+                          <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
+                        </div>
+                        <span className="text-sm font-bold text-red-500 flex-shrink-0">−{ex.amount}€</span>
+                        <div className="flex gap-1 flex-shrink-0">
+                          <button onClick={() => handleExpenseEdit(ex)} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => handleExpenseDelete(ex.id)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex justify-between px-4 py-2.5 bg-slate-50">
+                      <span className="text-xs text-slate-500 font-medium">Total gastos</span>
+                      <span className="text-xs font-bold text-red-500">{propExpenses.reduce((a, e) => a + e.amount, 0)}€</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* STATS */}
         {activeTab === 'stats' && (
           <div className="space-y-4">
-            {/* Resumen financiero global */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
               <h3 className="font-semibold text-slate-900 text-sm mb-4">Resumen financiero</h3>
               <div className="grid grid-cols-2 gap-3">
@@ -564,15 +631,10 @@ export function AdminPanel() {
                   { l: 'Pendiente cobro', v: `${totalPending.toFixed(0)}€`, c: 'text-[#E05A2B]' },
                   { l: 'Ticket medio', v: `${reservations.length ? (reservations.reduce((a, r) => a + (r.price_total || 0), 0) / reservations.length).toFixed(0) : 0}€`, c: 'text-slate-900' },
                 ].map(s => (
-                  <div key={s.l} className="bg-slate-50 rounded-xl p-3">
-                    <p className="text-[10px] text-slate-400 mb-0.5">{s.l}</p>
-                    <p className={`text-lg font-bold ${s.c}`}>{s.v}</p>
-                  </div>
+                  <div key={s.l} className="bg-slate-50 rounded-xl p-3"><p className="text-[10px] text-slate-400 mb-0.5">{s.l}</p><p className={`text-lg font-bold ${s.c}`}>{s.v}</p></div>
                 ))}
               </div>
             </div>
-
-            {/* Por piso — ocupación y finanzas */}
             {PROPERTIES.map(prop => {
               const propRes = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id));
               const propIncome = propRes.reduce((a, r) => a + (r.price_total || 0), 0);
@@ -587,43 +649,22 @@ export function AdminPanel() {
                     <h3 className="font-semibold text-slate-900 text-sm">{prop.name}</h3>
                     <span className="text-[10px] text-slate-400 ml-auto">{prop.rooms.length} hab.</span>
                   </div>
-                  {/* Stats del piso */}
                   <div className="grid grid-cols-3 gap-2 mb-3">
-                    <div className="bg-slate-50 rounded-xl p-2.5 text-center">
-                      <p className="text-[10px] text-slate-400">Reservas</p>
-                      <p className="text-base font-bold text-slate-900">{propRes.length}</p>
-                    </div>
-                    <div className="bg-slate-50 rounded-xl p-2.5 text-center">
-                      <p className="text-[10px] text-slate-400">Activas</p>
-                      <p className="text-base font-bold text-emerald-600">{activeRes.length}</p>
-                    </div>
-                    <div className="bg-slate-50 rounded-xl p-2.5 text-center">
-                      <p className="text-[10px] text-slate-400">% del total</p>
-                      <p className="text-base font-bold" style={{ color: prop.color }}>{pct}%</p>
-                    </div>
-                  </div>
-                  {/* Barra ocupación */}
-                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: prop.color }} />
-                  </div>
-                  {/* Finanzas */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-slate-500">Facturado</span>
-                      <span className="font-semibold text-slate-900">{propIncome}€</span>
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span className="text-slate-500">Cobrado</span>
-                      <span className="font-semibold text-emerald-600">{propPaid}€</span>
-                    </div>
-                    {propPending > 0 && (
-                      <div className="flex justify-between text-xs border-t border-slate-100 pt-1.5">
-                        <span className="text-slate-500">Pendiente</span>
-                        <span className="font-bold text-[#E05A2B]">{propPending.toFixed(0)}€</span>
+                    {[{ l: 'Reservas', v: propRes.length, c: 'text-slate-900' }, { l: 'Activas', v: activeRes.length, c: 'text-emerald-600' }, { l: '% total', v: `${pct}%`, c: '' }].map(s => (
+                      <div key={s.l} className="bg-slate-50 rounded-xl p-2.5 text-center">
+                        <p className="text-[10px] text-slate-400">{s.l}</p>
+                        <p className={`text-base font-bold ${s.c}`} style={!s.c ? { color: prop.color } : {}}>{s.v}</p>
                       </div>
-                    )}
+                    ))}
                   </div>
-                  {/* Por habitación */}
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
+                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: prop.color }} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs"><span className="text-slate-500">Facturado</span><span className="font-semibold">{propIncome}€</span></div>
+                    <div className="flex justify-between text-xs"><span className="text-slate-500">Cobrado</span><span className="font-semibold text-emerald-600">{propPaid}€</span></div>
+                    {propPending > 0 && <div className="flex justify-between text-xs border-t border-slate-100 pt-1.5"><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{propPending.toFixed(0)}€</span></div>}
+                  </div>
                   {prop.rooms.length > 1 && (
                     <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Por habitación</p>
@@ -633,17 +674,12 @@ export function AdminPanel() {
                         const roomPaid = roomRes.reduce((a, r) => a + (r.price_paid || 0), 0);
                         const roomPending = roomIncome - roomPaid;
                         return (
-                          <div key={room.id} className="flex items-center gap-3">
-                            <div className="flex-1">
-                              <div className="flex justify-between text-xs mb-1">
-                                <span className="text-slate-600 font-medium">{room.name}</span>
-                                <span className="text-slate-500">{roomRes.length} res · {roomIncome}€</span>
-                              </div>
-                              <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-                                <div className="h-full rounded-full" style={{ width: `${propRes.length ? (roomRes.length / propRes.length) * 100 : 0}%`, background: prop.color, opacity: 0.7 }} />
-                              </div>
-                              {roomPending > 0 && <p className="text-[10px] text-[#E05A2B] mt-0.5">Pendiente: {roomPending.toFixed(0)}€</p>}
+                          <div key={room.id}>
+                            <div className="flex justify-between text-xs mb-1"><span className="text-slate-600 font-medium">{room.name}</span><span className="text-slate-500">{roomRes.length} res · {roomIncome}€</span></div>
+                            <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full" style={{ width: `${propRes.length ? (roomRes.length / propRes.length) * 100 : 0}%`, background: prop.color, opacity: 0.7 }} />
                             </div>
+                            {roomPending > 0 && <p className="text-[10px] text-[#E05A2B] mt-0.5">Pendiente: {roomPending.toFixed(0)}€</p>}
                           </div>
                         );
                       })}
@@ -652,20 +688,15 @@ export function AdminPanel() {
                 </div>
               );
             })}
-
-            {/* Por canal */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
-              <h3 className="font-semibold text-slate-900 text-sm mb-4">Reservas por canal</h3>
+              <h3 className="font-semibold text-slate-900 text-sm mb-4">Por canal</h3>
               {CHANNELS.map(ch => {
                 const count = reservations.filter(r => r.channel === ch).length;
                 if (count === 0) return null;
                 const income = reservations.filter(r => r.channel === ch).reduce((a, r) => a + (r.price_total || 0), 0);
                 return (
                   <div key={ch} className="mb-3 last:mb-0">
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-slate-600 font-medium">{ch}</span>
-                      <span className="text-slate-500">{count} res · {income}€</span>
-                    </div>
+                    <div className="flex justify-between text-xs mb-1"><span className="text-slate-600 font-medium">{ch}</span><span className="text-slate-500">{count} · {income}€</span></div>
                     <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                       <div className="h-full bg-[#E05A2B] rounded-full" style={{ width: `${(count / reservations.length) * 100}%` }} />
                     </div>
@@ -680,12 +711,7 @@ export function AdminPanel() {
       {/* Bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 z-40">
         <div className="flex">
-          {[
-            { id: 'today', icon: Home, label: 'Hoy' },
-            { id: 'list', icon: LayoutList, label: 'Reservas' },
-            { id: 'calendar', icon: CalendarDays, label: 'Calendario' },
-            { id: 'stats', icon: BarChart2, label: 'Stats' },
-          ].map(tab => (
+          {[{ id: 'today', icon: Home, label: 'Hoy' }, { id: 'list', icon: LayoutList, label: 'Reservas' }, { id: 'calendar', icon: CalendarDays, label: 'Calendario' }, { id: 'expenses', icon: Wallet, label: 'Gastos' }, { id: 'stats', icon: BarChart2, label: 'Stats' }].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id as any)}
               className={`flex-1 flex flex-col items-center py-2.5 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
               <tab.icon className="w-5 h-5" />
@@ -701,6 +727,7 @@ export function AdminPanel() {
           const room = ALL_ROOMS.find(r => r.id === selectedRes.room_id);
           const pending = (selectedRes.price_total || 0) - (selectedRes.price_paid || 0);
           const nights = calcNights(selectedRes.check_in, selectedRes.check_out);
+          const isPaid = pending <= 0 && (selectedRes.price_total || 0) > 0;
           return (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
@@ -716,7 +743,10 @@ export function AdminPanel() {
                   </div>
                   <button onClick={() => setSelectedRes(null)} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-4 h-4 text-slate-400" /></button>
                 </div>
-                <h3 className="text-xl font-bold text-slate-900 mb-4">{selectedRes.guest_name}</h3>
+                <div className="flex items-center gap-2 mb-4">
+                  <h3 className="text-xl font-bold text-slate-900">{selectedRes.guest_name}</h3>
+                  {isPaid && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">✓ Pagado</span>}
+                </div>
                 <div className="space-y-2.5 mb-4 text-sm">
                   <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span>{fmtDate(selectedRes.check_in)} → {fmtDate(selectedRes.check_out)} · {nights} {nights === 1 ? 'noche' : 'noches'}</span></div>
                   <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span>{selectedRes.num_persons} {selectedRes.num_persons === 1 ? 'persona' : 'personas'}</span></div>
@@ -729,7 +759,10 @@ export function AdminPanel() {
                 <div className="bg-slate-50 rounded-xl p-4 mb-4">
                   <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Total</span><span className="font-semibold">{selectedRes.price_total || 0}€</span></div>
                   <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Cobrado</span><span className="font-semibold text-emerald-600">{selectedRes.price_paid || 0}€</span></div>
-                  {pending > 0 && <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5"><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span></div>}
+                  {isPaid
+                    ? <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5"><span className="text-slate-500">Estado</span><span className="font-bold text-emerald-600">✓ Completamente pagado</span></div>
+                    : <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5"><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span></div>
+                  }
                 </div>
                 {selectedRes.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600">{selectedRes.notes}</div>}
                 <div className="flex gap-2">
@@ -742,7 +775,7 @@ export function AdminPanel() {
         })()}
       </AnimatePresence>
 
-      {/* Form - slide up on mobile */}
+      {/* Reservation Form */}
       <AnimatePresence>
         {showForm && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -751,23 +784,17 @@ export function AdminPanel() {
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
               className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-lg shadow-xl max-h-[95vh] flex flex-col"
               onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0 relative">
                 <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto sm:hidden absolute left-1/2 -translate-x-1/2 top-2" />
                 <h3 className="font-semibold text-slate-900">{editingId ? 'Editar reserva' : 'Nueva reserva'}</h3>
                 <button onClick={() => { setShowForm(false); setEditingId(null); setFormError(''); }} className="p-1.5 hover:bg-slate-100 rounded-xl"><X className="w-4 h-4 text-slate-500" /></button>
               </div>
               <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
-                {/* Paso 1: Piso */}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
                   <div className="grid grid-cols-3 gap-2">
                     {PROPERTIES.map(p => (
-                      <button key={p.id} type="button"
-                        onClick={() => {
-                          setSelectedProperty(p.id);
-                          const firstRoom = p.rooms[0];
-                          setForm(f => ({ ...f, room_id: firstRoom.id }));
-                        }}
+                      <button key={p.id} type="button" onClick={() => { setSelectedProperty(p.id); setForm(f => ({ ...f, room_id: p.rooms[0].id })); }}
                         className="py-2.5 rounded-xl text-xs font-semibold border transition-all"
                         style={selectedProperty === p.id ? { background: p.color, color: 'white', borderColor: p.color } : { background: 'white', color: '#64748b', borderColor: '#e2e8f0' }}>
                         {p.name}
@@ -775,20 +802,17 @@ export function AdminPanel() {
                     ))}
                   </div>
                 </div>
-                {/* Paso 2: Habitación */}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Habitación *</label>
                   <div className="flex flex-wrap gap-2">
                     {(PROPERTIES.find(p => p.id === selectedProperty)?.rooms || []).map(r => (
-                      <button key={r.id} type="button"
-                        onClick={() => setForm(f => ({ ...f, room_id: r.id }))}
+                      <button key={r.id} type="button" onClick={() => setForm(f => ({ ...f, room_id: r.id }))}
                         className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${form.room_id === r.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
                         {r.name}
                       </button>
                     ))}
                   </div>
                 </div>
-                {/* Nombre + teléfono */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="col-span-2 sm:col-span-1">
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Nombre *</label>
@@ -799,7 +823,6 @@ export function AdminPanel() {
                     <input value={form.guest_phone} onChange={e => setForm(f => ({ ...f, guest_phone: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="+34 600 000 000" />
                   </div>
                 </div>
-                {/* Personas + nacionalidad */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Personas *</label>
@@ -807,20 +830,15 @@ export function AdminPanel() {
                   </div>
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Nacionalidad</label>
-                    <select value={form.guest_nationality} onChange={e => setForm(f => ({ ...f, guest_nationality: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]">
-                      <option value="">—</option>
-                      {NATIONALITIES.map(n => <option key={n} value={n}>{n}</option>)}
-                    </select>
+                    <NationalitySearch value={form.guest_nationality} onChange={v => setForm(f => ({ ...f, guest_nationality: v }))} />
                   </div>
                 </div>
-                {/* Canal */}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Canal</label>
                   <div className="flex flex-wrap gap-2">
                     {CHANNELS.map(c => <button key={c} type="button" onClick={() => setForm(f => ({ ...f, channel: c }))} className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${form.channel === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>{c}</button>)}
                   </div>
                 </div>
-                {/* Fechas */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Check-in *</label>
@@ -831,7 +849,6 @@ export function AdminPanel() {
                     <input required type="date" value={form.check_out} onChange={e => handleCIO('check_out', e.target.value)} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
                   </div>
                 </div>
-                {/* Calculadora */}
                 <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
                   <p className="text-xs font-semibold text-slate-600 mb-3">💰 Calculadora</p>
                   <div className="grid grid-cols-3 gap-2">
@@ -851,7 +868,6 @@ export function AdminPanel() {
                     </div>
                   </div>
                 </div>
-                {/* Precios */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Total (€)</label>
@@ -862,26 +878,23 @@ export function AdminPanel() {
                     <input type="number" value={form.price_paid} onChange={e => setForm(f => ({ ...f, price_paid: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
                   </div>
                 </div>
-                {/* Estado pago */}
-                <div>
-                  <label className="text-xs font-medium text-slate-600 mb-2 block">Estado de pago</label>
-                  <div className="flex gap-2">
-                    {[{ v: 'pending', l: 'Pendiente' }, { v: 'partial', l: 'Parcial' }, { v: 'paid', l: 'Pagado' }].map(s => (
-                      <button key={s.v} type="button" onClick={() => setForm(f => ({ ...f, payment_status: s.v }))}
-                        className={`flex-1 py-2.5 rounded-xl text-xs font-medium border transition-colors ${form.payment_status === s.v ? s.v === 'paid' ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : s.v === 'partial' ? 'bg-yellow-100 text-yellow-700 border-yellow-300' : 'bg-red-100 text-red-600 border-red-300' : 'bg-white text-slate-500 border-slate-200'}`}>
-                        {s.l}
-                      </button>
-                    ))}
+                {form.price_total && (
+                  <div className="bg-slate-50 rounded-xl p-3 text-xs text-slate-600">
+                    Estado calculado:{' '}
+                    {Number(form.price_paid) >= Number(form.price_total)
+                      ? <span className="text-emerald-600 font-semibold">✓ Pagado</span>
+                      : Number(form.price_paid) > 0
+                      ? <span className="text-yellow-600 font-semibold">Parcial — pendiente {(Number(form.price_total) - Number(form.price_paid)).toFixed(0)}€</span>
+                      : <span className="text-[#E05A2B] font-semibold">Pendiente {form.price_total}€</span>
+                    }
                   </div>
-                </div>
-                {/* Método pago */}
+                )}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
                   <div className="flex flex-wrap gap-2">
                     {PAYMENT_METHODS.map(m => <button key={m} type="button" onClick={() => setForm(f => ({ ...f, payment_method: m }))} className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${form.payment_method === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>{m}</button>)}
                   </div>
                 </div>
-                {/* Notas */}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Notas</label>
                   <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B] resize-none" placeholder="Info adicional..." />
@@ -890,6 +903,67 @@ export function AdminPanel() {
                 <div className="flex gap-3 pb-2">
                   <button type="button" onClick={() => { setShowForm(false); setEditingId(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
                   <button type="submit" className="flex-1 py-3 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold">{editingId ? 'Guardar' : 'Crear reserva'}</button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Expense Form */}
+      <AnimatePresence>
+        {showExpenseForm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center"
+            onClick={e => { if (e.target === e.currentTarget) { setShowExpenseForm(false); setEditingExpenseId(null); } }}>
+            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-md shadow-xl max-h-[90vh] flex flex-col"
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
+                <h3 className="font-semibold text-slate-900">{editingExpenseId ? 'Editar gasto' : 'Nuevo gasto'}</h3>
+                <button onClick={() => { setShowExpenseForm(false); setEditingExpenseId(null); }} className="p-1.5 hover:bg-slate-100 rounded-xl"><X className="w-4 h-4 text-slate-500" /></button>
+              </div>
+                      <form onSubmit={handleExpenseSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {PROPERTIES.map(p => (
+                      <button key={p.id} type="button" onClick={() => setExpenseForm(f => ({ ...f, property_id: p.id }))}
+                        className="py-2.5 rounded-xl text-xs font-semibold border transition-all"
+                        style={expenseForm.property_id === p.id ? { background: p.color, color: 'white', borderColor: p.color } : { background: 'white', color: '#64748b', borderColor: '#e2e8f0' }}>
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Categoría *</label>
+                  <div className="flex flex-wrap gap-2">
+                    {EXPENSE_CATEGORIES.map(c => (
+                      <button key={c} type="button" onClick={() => setExpenseForm(f => ({ ...f, category: c }))}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${expenseForm.category === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Descripción *</label>
+                  <input required value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="Ej: Compra sofá salón" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€) *</label>
+                    <input required type="number" min="0" step="0.01" value={expenseForm.amount} onChange={e => setExpenseForm(f => ({ ...f, amount: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Fecha *</label>
+                    <input required type="date" value={expenseForm.date} onChange={e => setExpenseForm(f => ({ ...f, date: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                  </div>
+                </div>
+                <div className="flex gap-3 pb-2">
+                  <button type="button" onClick={() => { setShowExpenseForm(false); setEditingExpenseId(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
+                  <button type="submit" className="flex-1 py-3 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold">{editingExpenseId ? 'Guardar' : 'Añadir gasto'}</button>
                 </div>
               </form>
             </motion.div>
