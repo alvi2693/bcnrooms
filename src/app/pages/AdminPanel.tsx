@@ -48,13 +48,16 @@ interface Expense {
 const emptyForm = {
   room_id: 1, guest_name: '', guest_email: '', guest_phone: '',
   guest_nationality: '', num_persons: 1, check_in: '', check_out: '',
-  price_per_night: '', price_total: '', price_paid: '',
-  payment_status: 'pending', payment_method: 'Efectivo', channel: 'WhatsApp', notes: '',
+  price_per_night: '', price_total: '',
+  deposit_amount: '', deposit_method: 'Transferencia',
+  checkin_amount: '', checkin_method: 'Efectivo',
+  channel: 'WhatsApp', notes: '',
 };
 
 const emptyExpenseForm = {
   property_id: 'sagrera', category: '🔧 Mantenimiento',
   description: '', amount: '', date: new Date().toISOString().split('T')[0],
+  payment_method: 'Efectivo',
 };
 
 function addDays(date: Date, days: number): Date { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
@@ -155,6 +158,8 @@ export function AdminPanel() {
         price_total: r.price_total ? Number(r.price_total) : 0,
         price_per_night: r.price_per_night ? Number(r.price_per_night) : 0,
         price_paid: r.price_paid ? Number(r.price_paid) : 0,
+        deposit_amount: r.deposit_amount ? Number(r.deposit_amount) : 0,
+        checkin_amount: r.checkin_amount ? Number(r.checkin_amount) : 0,
         num_persons: Number(r.num_persons),
       })));
     } catch {}
@@ -174,12 +179,16 @@ export function AdminPanel() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setFormError('');
     const room = ALL_ROOMS.find(r => r.id === Number(form.room_id));
-    const pricePaid = Number(form.price_paid) || 0;
-    const priceTotal = form.price_total ? Number(form.price_total) : null;
-    let paymentStatus = 'pending';
-    if (priceTotal && pricePaid >= priceTotal) paymentStatus = 'paid';
-    else if (pricePaid > 0) paymentStatus = 'partial';
-    const payload = { ...form, room_id: Number(form.room_id), room_name: room ? `${room.propertyName} - ${room.name}` : '', num_persons: Number(form.num_persons), price_total: priceTotal, price_paid: pricePaid, payment_status: paymentStatus };
+    const payload = {
+      ...form,
+      room_id: Number(form.room_id),
+      room_name: room ? `${room.propertyName} - ${room.name}` : '',
+      num_persons: Number(form.num_persons),
+      price_total: form.price_total ? Number(form.price_total) : null,
+      price_per_night: form.price_per_night ? Number(form.price_per_night) : null,
+      deposit_amount: Number(form.deposit_amount) || 0,
+      checkin_amount: Number(form.checkin_amount) || 0,
+    };
     const url = editingId ? `${BACKEND_URL}/admin/reservations/${editingId}` : `${BACKEND_URL}/admin/reservations`;
     const res = await fetch(url, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
     const data = await res.json();
@@ -196,7 +205,19 @@ export function AdminPanel() {
   function handleEdit(r: Reservation) {
     const prop = PROPERTIES.find(p => p.rooms.some(rm => rm.id === r.room_id));
     if (prop) setSelectedProperty(prop.id);
-    setForm({ room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '', guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '', num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '', check_out: r.check_out?.split('T')[0] || '', price_per_night: (r as any).price_per_night?.toString() || '', price_total: r.price_total?.toString() || '', price_paid: r.price_paid?.toString() || '', payment_status: r.payment_status, payment_method: r.payment_method || 'Efectivo', channel: r.channel || 'WhatsApp', notes: r.notes || '' });
+    setForm({
+      room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '',
+      guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '',
+      num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '',
+      check_out: r.check_out?.split('T')[0] || '',
+      price_per_night: (r as any).price_per_night?.toString() || '',
+      price_total: r.price_total?.toString() || '',
+      deposit_amount: (r as any).deposit_amount?.toString() || '',
+      deposit_method: (r as any).deposit_method || 'Transferencia',
+      checkin_amount: (r as any).checkin_amount?.toString() || '',
+      checkin_method: (r as any).checkin_method || 'Efectivo',
+      channel: r.channel || 'WhatsApp', notes: r.notes || ''
+    });
     setEditingId(r.id); setSelectedRes(null); setShowForm(true);
   }
 
@@ -216,7 +237,7 @@ export function AdminPanel() {
   }
 
   function handleExpenseEdit(ex: Expense) {
-    setExpenseForm({ property_id: ex.property_id, category: ex.category, description: ex.description, amount: ex.amount.toString(), date: ex.date });
+    setExpenseForm({ property_id: ex.property_id, category: ex.category, description: ex.description, amount: ex.amount.toString(), date: ex.date, payment_method: (ex as any).payment_method || 'Efectivo' });
     setEditingExpenseId(ex.id); setShowExpenseForm(true);
   }
 
@@ -757,12 +778,26 @@ export function AdminPanel() {
                   {selectedRes.payment_method && <div className="flex items-center gap-3"><span className="w-4 text-center text-xs">💳</span><span>{selectedRes.payment_method}</span></div>}
                 </div>
                 <div className="bg-slate-50 rounded-xl p-4 mb-4">
-                  <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Total</span><span className="font-semibold">{selectedRes.price_total || 0}€</span></div>
-                  <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Cobrado</span><span className="font-semibold text-emerald-600">{selectedRes.price_paid || 0}€</span></div>
-                  {isPaid
-                    ? <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5"><span className="text-slate-500">Estado</span><span className="font-bold text-emerald-600">✓ Completamente pagado</span></div>
-                    : <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5"><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span></div>
-                  }
+                  <p className="text-xs font-semibold text-slate-600 mb-2">Desglose de pagos</p>
+                  <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Total estancia</span><span className="font-semibold">{selectedRes.price_total || 0}€</span></div>
+                  {(selectedRes as any).deposit_amount > 0 && (
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span className="text-blue-600">🔒 Reserva ({(selectedRes as any).deposit_method})</span>
+                      <span className="font-semibold text-blue-600">{(selectedRes as any).deposit_amount}€</span>
+                    </div>
+                  )}
+                  {(selectedRes as any).checkin_amount > 0 && (
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span className="text-emerald-600">🏠 Ingreso ({(selectedRes as any).checkin_method})</span>
+                      <span className="font-semibold text-emerald-600">{(selectedRes as any).checkin_amount}€</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5">
+                    {isPaid
+                      ? <><span className="text-slate-500">Estado</span><span className="font-bold text-emerald-600">✓ Completamente pagado</span></>
+                      : <><span className="text-slate-500">Pendiente al ingreso</span><span className="font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span></>
+                    }
+                  </div>
                 </div>
                 {selectedRes.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600">{selectedRes.notes}</div>}
                 <div className="flex gap-2">
@@ -870,31 +905,81 @@ export function AdminPanel() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">Total (€)</label>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Total estancia (€)</label>
                     <input type="number" value={form.price_total} onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
                   </div>
-                  <div>
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">Cobrado (€)</label>
-                    <input type="number" value={form.price_paid} onChange={e => setForm(f => ({ ...f, price_paid: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                  <div className="flex items-end">
+                    {form.price_total && (form.deposit_amount || form.checkin_amount) && (
+                      <div className="w-full bg-slate-50 rounded-xl p-2.5 text-xs text-slate-600">
+                        Pendiente: <span className="font-bold text-[#E05A2B]">
+                          {Math.max(0, Number(form.price_total) - (Number(form.deposit_amount) || 0) - (Number(form.checkin_amount) || 0)).toFixed(0)}€
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
+
+                {/* Pago reserva */}
+                <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
+                  <p className="text-xs font-semibold text-slate-700 mb-3">🔒 Pago al reservar</p>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Importe (€)</label>
+                      <input type="number" value={form.deposit_amount} onChange={e => setForm(f => ({ ...f, deposit_amount: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Método</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['Transferencia', 'Efectivo', 'Bizum', 'PayPal'].map(m => (
+                          <button key={m} type="button" onClick={() => setForm(f => ({ ...f, deposit_method: m }))}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors ${form.deposit_method === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pago al ingreso */}
+                <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
+                  <p className="text-xs font-semibold text-slate-700 mb-3">🏠 Pago al ingresar</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Importe (€)</label>
+                      <input type="number" value={form.checkin_amount} onChange={e => setForm(f => ({ ...f, checkin_amount: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Método</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
+                          <button key={m} type="button" onClick={() => setForm(f => ({ ...f, checkin_method: m }))}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors ${form.checkin_method === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200'}`}>
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Resumen */}
                 {form.price_total && (
-                  <div className="bg-slate-50 rounded-xl p-3 text-xs text-slate-600">
-                    Estado calculado:{' '}
-                    {Number(form.price_paid) >= Number(form.price_total)
-                      ? <span className="text-emerald-600 font-semibold">✓ Pagado</span>
-                      : Number(form.price_paid) > 0
-                      ? <span className="text-yellow-600 font-semibold">Parcial — pendiente {(Number(form.price_total) - Number(form.price_paid)).toFixed(0)}€</span>
-                      : <span className="text-[#E05A2B] font-semibold">Pendiente {form.price_total}€</span>
-                    }
+                  <div className="bg-slate-50 rounded-xl p-3 text-xs">
+                    <div className="flex justify-between mb-1"><span className="text-slate-500">Total</span><span className="font-semibold text-slate-900">{form.price_total}€</span></div>
+                    {Number(form.deposit_amount) > 0 && <div className="flex justify-between mb-1"><span className="text-blue-600">↳ Reserva ({form.deposit_method})</span><span className="font-semibold text-blue-600">{form.deposit_amount}€</span></div>}
+                    {Number(form.checkin_amount) > 0 && <div className="flex justify-between mb-1"><span className="text-emerald-600">↳ Ingreso ({form.checkin_method})</span><span className="font-semibold text-emerald-600">{form.checkin_amount}€</span></div>}
+                    <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1">
+                      <span className="text-slate-500">Estado</span>
+                      {(Number(form.deposit_amount) + Number(form.checkin_amount)) >= Number(form.price_total)
+                        ? <span className="font-bold text-emerald-600">✓ Pagado completo</span>
+                        : (Number(form.deposit_amount) + Number(form.checkin_amount)) > 0
+                        ? <span className="font-bold text-yellow-600">Parcial — pendiente {(Number(form.price_total) - Number(form.deposit_amount) - Number(form.checkin_amount)).toFixed(0)}€</span>
+                        : <span className="font-bold text-[#E05A2B]">Pendiente {form.price_total}€</span>
+                      }
+                    </div>
                   </div>
                 )}
-                <div>
-                  <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
-                  <div className="flex flex-wrap gap-2">
-                    {PAYMENT_METHODS.map(m => <button key={m} type="button" onClick={() => setForm(f => ({ ...f, payment_method: m }))} className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${form.payment_method === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>{m}</button>)}
-                  </div>
-                </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Notas</label>
                   <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B] resize-none" placeholder="Info adicional..." />
@@ -950,6 +1035,17 @@ export function AdminPanel() {
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Descripción *</label>
                   <input required value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="Ej: Compra sofá salón" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
+                  <div className="flex flex-wrap gap-2">
+                    {PAYMENT_METHODS.map(m => (
+                      <button key={m} type="button" onClick={() => setExpenseForm(f => ({ ...f, payment_method: m }))}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${expenseForm.payment_method === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
