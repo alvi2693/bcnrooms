@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet } from 'lucide-react';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -20,6 +20,13 @@ const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: 
 const CHANNELS = ['WhatsApp', 'Facebook', 'Airbnb', 'Booking', 'Instagram', 'Directo'];
 const PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Depósito bancario', 'PayPal', 'Bizum', 'Tarjeta', 'Otros'];
 const EXPENSE_CATEGORIES = ['🛋️ Mobiliario', '🔧 Mantenimiento', '🧹 Limpieza', '💡 Suministros', '🏠 Alquiler/Hipoteca', '📦 Equipamiento', '📋 Otros'];
+
+// Un método se clasifica en 'Efectivo' o en 'Banco' (todo lo que entra a la cuenta bancaria).
+const CASH_METHODS = ['Efectivo'];
+function cajaOf(method?: string): 'efectivo' | 'banco' {
+  return CASH_METHODS.includes((method || '').trim()) ? 'efectivo' : 'banco';
+}
+
 const NATIONALITIES = [
   'Alemana','Austriaca','Belga','Búlgara','Checa','Croata','Danesa','Eslovaca','Eslovena','Española',
   'Estonia','Finlandesa','Francesa','Griega','Húngara','Irlandesa','Islandesa','Italiana','Letona',
@@ -36,13 +43,17 @@ interface Reservation {
   id: number; room_id: number; room_name: string; guest_name: string;
   guest_email?: string; guest_phone?: string; guest_nationality?: string;
   num_persons: number; check_in: string; check_out: string;
-  price_total?: number; price_paid?: number; payment_status: string;
+  price_total?: number; price_per_night?: number; price_paid?: number; payment_status: string;
   payment_method?: string; channel?: string; notes?: string;
+  deposit_amount?: number; deposit_method?: string;
+  checkin_amount?: number; checkin_method?: string;
+  created_at?: string;
 }
 
 interface Expense {
   id: number; property_id: string; property_name: string;
   category: string; description: string; amount: number; date: string;
+  payment_method?: string; created_at?: string;
 }
 
 const emptyForm = {
@@ -70,6 +81,20 @@ function fmtDate(str: string): string {
 function calcNights(a: string, b: string): number {
   if (!a || !b) return 0;
   return Math.ceil((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+}
+
+// --- Helpers de cuadre semanal (lunes-domingo) ---
+function mondayOf(dateStr: string): string {
+  const d = new Date(dateStr.split('T')[0] + 'T00:00:00');
+  const day = d.getDay(); // 0=domingo, 1=lunes...
+  const diff = day === 0 ? -6 : 1 - day; // retroceder al lunes
+  d.setDate(d.getDate() + diff);
+  return toDateStr(d);
+}
+function fmtWeekLabel(mondayStr: string): string {
+  const mon = new Date(mondayStr + 'T00:00:00');
+  const sun = addDays(mon, 6);
+  return `${mon.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} — ${sun.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}`;
 }
 
 function NationalitySearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -119,8 +144,12 @@ export function AdminPanel() {
   const [formError, setFormError] = useState('');
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
-  const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'expenses' | 'stats'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'expenses' | 'stats' | 'cuadre'>('today');
   const [calendarStart, setCalendarStart] = useState<Date>(() => new Date());
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMethod, setPayMethod] = useState('Efectivo');
+  const [payingResId, setPayingResId] = useState<number | null>(null);
   const [pushEnabled, setPushEnabled] = useState(false);
 
   const DAYS_VISIBLE = 14;
@@ -210,12 +239,12 @@ export function AdminPanel() {
       guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '',
       num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '',
       check_out: r.check_out?.split('T')[0] || '',
-      price_per_night: (r as any).price_per_night?.toString() || '',
+      price_per_night: r.price_per_night?.toString() || '',
       price_total: r.price_total?.toString() || '',
-      deposit_amount: (r as any).deposit_amount?.toString() || '',
-      deposit_method: (r as any).deposit_method || 'Transferencia',
-      checkin_amount: (r as any).checkin_amount?.toString() || '',
-      checkin_method: (r as any).checkin_method || 'Efectivo',
+      deposit_amount: r.deposit_amount?.toString() || '',
+      deposit_method: r.deposit_method || 'Transferencia',
+      checkin_amount: r.checkin_amount?.toString() || '',
+      checkin_method: r.checkin_method || 'Efectivo',
       channel: r.channel || 'WhatsApp', notes: r.notes || ''
     });
     setEditingId(r.id); setSelectedRes(null); setShowForm(true);
@@ -237,7 +266,7 @@ export function AdminPanel() {
   }
 
   function handleExpenseEdit(ex: Expense) {
-    setExpenseForm({ property_id: ex.property_id, category: ex.category, description: ex.description, amount: ex.amount.toString(), date: ex.date, payment_method: (ex as any).payment_method || 'Efectivo' });
+    setExpenseForm({ property_id: ex.property_id, category: ex.category, description: ex.description, amount: ex.amount.toString(), date: ex.date, payment_method: ex.payment_method || 'Efectivo' });
     setEditingExpenseId(ex.id); setShowExpenseForm(true);
   }
 
@@ -255,8 +284,43 @@ export function AdminPanel() {
     });
   }
 
-  function getResStartCol(res: Reservation): number { return days.findIndex(d => toDateStr(d) >= res.check_in); }
-  function getResSpan(res: Reservation): number { let s = 0; for (const d of days) { const ds = toDateStr(d); if (ds >= res.check_in && ds <= res.check_out) s++; } return s; }
+  // Posición de la barra en píxeles, usando medios días (check-in entra a mediodía, check-out sale a mediodía).
+  // Devuelve null si la reserva no intersecta el rango visible.
+  function getResBar(res: Reservation): { left: number; width: number; clipStart: boolean; clipEnd: boolean } | null {
+    const firstDay = toDateStr(days[0]);
+    const lastDay = toDateStr(days[days.length - 1]);
+    if (res.check_out < firstDay || res.check_in > lastDay) return null;
+
+    // Índice (float) de columna para una fecha; el check-in ocupa media celda (0.5) y el check-out media celda.
+    const idxOf = (dateStr: string) => days.findIndex(d => toDateStr(d) === dateStr);
+
+    const ciIdx = idxOf(res.check_in);
+    const coIdx = idxOf(res.check_out);
+
+    // Inicio real: si el check-in está dentro del rango, media celda a la derecha; si empieza antes, desde el borde izquierdo.
+    const startPx = ciIdx >= 0 ? (ciIdx + 0.5) * COL_W : 0;
+    const clipStart = ciIdx >= 0; // solo cortamos el diente si el check-in es visible
+
+    // Fin real: si el check-out está dentro del rango, media celda; si termina después, hasta el borde derecho.
+    const endPx = coIdx >= 0 ? (coIdx + 0.5) * COL_W : DAYS_VISIBLE * COL_W;
+    const clipEnd = coIdx >= 0;
+
+    return { left: startPx, width: Math.max(endPx - startPx, COL_W * 0.5), clipStart, clipEnd };
+  }
+
+  async function handleQuickPay() {
+    if (!payingResId) return;
+    await fetch(`${BACKEND_URL}/admin/reservations/${payingResId}/checkin-payment`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ checkin_amount: Number(payAmount), checkin_method: payMethod }),
+    });
+    setShowPayModal(false);
+    setPayAmount('');
+    setPayingResId(null);
+    setSelectedRes(null);
+    fetchReservations();
+  }
 
   async function enablePush() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) { alert('Tu navegador no soporta notificaciones push'); return; }
@@ -553,14 +617,30 @@ export function AdminPanel() {
                               })}
                             </div>
                             {visibleRes.map(res => {
-                              const sc = getResStartCol(res), span = getResSpan(res);
-                              if (sc < 0 || span === 0) return null;
+                              const bar = getResBar(res);
+                              if (!bar) return null;
                               const pending = (res.price_total || 0) - (res.price_paid || 0);
                               const isPaid = pending <= 0 && (res.price_total || 0) > 0;
+                              // Diente diagonal: corta la esquina inferior-izquierda (salida entrante) y superior-derecha (salida saliente)
+                              // El ancho del diente en px es media celda, así encaja con la reserva vecina.
+                              const tooth = COL_W * 0.5;
+                              const clipStart = bar.clipStart;
+                              const clipEnd = bar.clipEnd;
+                              // polígono: esquinas en orden top-left, top-right, bottom-right, bottom-left
+                              const clipPath = `polygon(${clipStart ? `${tooth}px 0` : '0 0'}, 100% 0, ${clipEnd ? `calc(100% - ${tooth}px) 100%` : '100% 100%'}, 0 100%)`;
                               return (
                                 <button key={res.id} onClick={() => setSelectedRes(res)}
-                                  className="absolute top-1.5 bottom-1.5 rounded-lg flex items-center px-2 gap-1 text-white text-[11px] font-medium shadow-sm hover:opacity-90 truncate"
-                                  style={{ left: sc * COL_W + 2, width: span * COL_W - 4, background: prop.color, zIndex: 10 }}>
+                                  className="absolute top-1.5 bottom-1.5 flex items-center gap-1 text-white text-[11px] font-medium shadow-sm hover:opacity-90 truncate"
+                                  style={{
+                                    left: bar.left,
+                                    width: bar.width,
+                                    background: prop.color,
+                                    zIndex: 10,
+                                    clipPath,
+                                    borderRadius: 8,
+                                    paddingLeft: clipStart ? tooth + 4 : 8,
+                                    paddingRight: clipEnd ? tooth + 4 : 8,
+                                  }}>
                                   <span className="truncate">{res.guest_name}</span>
                                   {isPaid
                                     ? <span className="flex-shrink-0 bg-white/30 rounded px-1 text-[9px]">✓</span>
@@ -619,6 +699,7 @@ export function AdminPanel() {
                           <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-xs text-slate-500">{ex.category}</span>
                             <span className="text-[10px] text-slate-400">{fmtDate(ex.date)}</span>
+                            {ex.payment_method && <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${cajaOf(ex.payment_method) === 'efectivo' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>{ex.payment_method}</span>}
                           </div>
                           <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
                         </div>
@@ -709,8 +790,63 @@ export function AdminPanel() {
                 </div>
               );
             })}
+
+            {/* Balance por caja: Efectivo vs Banco */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
-              <h3 className="font-semibold text-slate-900 text-sm mb-4">Por canal</h3>
+              <h3 className="font-semibold text-slate-900 text-sm mb-4">💵 Balance por caja</h3>
+              {(() => {
+                // Cobrado por caja (cada pago según su método)
+                let efectivoCobrado = 0, bancoCobrado = 0;
+                const bancoDesglose: Record<string, number> = {};
+                reservations.forEach(r => {
+                  const pagos = [
+                    { amt: Number(r.deposit_amount) || 0, m: r.deposit_method },
+                    { amt: Number(r.checkin_amount) || 0, m: r.checkin_method },
+                  ];
+                  pagos.forEach(p => {
+                    if (p.amt <= 0) return;
+                    if (cajaOf(p.m) === 'efectivo') efectivoCobrado += p.amt;
+                    else { bancoCobrado += p.amt; const k = (p.m || 'Otros').trim() || 'Otros'; bancoDesglose[k] = (bancoDesglose[k] || 0) + p.amt; }
+                  });
+                });
+                // Gastos por caja
+                let gastosEfectivo = 0, gastosBanco = 0;
+                expenses.forEach(e => {
+                  if (cajaOf(e.payment_method) === 'efectivo') gastosEfectivo += e.amount;
+                  else gastosBanco += e.amount;
+                });
+                const cajaEfectivo = efectivoCobrado - gastosEfectivo;
+                const cajaBanco = bancoCobrado - gastosBanco;
+                return (
+                  <div className="space-y-3">
+                    {/* Caja efectivo */}
+                    <div className="bg-emerald-50 rounded-xl p-3">
+                      <div className="flex justify-between text-sm mb-1"><span className="text-slate-600 font-medium">💵 Efectivo cobrado</span><span className="font-bold text-emerald-600">{efectivoCobrado.toFixed(0)}€</span></div>
+                      <div className="flex justify-between text-xs"><span className="text-slate-400">Gastos en efectivo</span><span className="text-red-500">−{gastosEfectivo.toFixed(0)}€</span></div>
+                      <div className="flex justify-between text-sm border-t border-emerald-200 pt-2 mt-2"><span className="font-semibold text-slate-700">Caja efectivo neta</span><span className={`font-bold text-lg ${cajaEfectivo >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{cajaEfectivo.toFixed(0)}€</span></div>
+                    </div>
+                    {/* Caja banco */}
+                    <div className="bg-blue-50 rounded-xl p-3">
+                      <div className="flex justify-between text-sm mb-1"><span className="text-slate-600 font-medium">🏦 Banco cobrado</span><span className="font-bold text-blue-600">{bancoCobrado.toFixed(0)}€</span></div>
+                      {Object.entries(bancoDesglose).sort((a, b) => b[1] - a[1]).map(([m, v]) => (
+                        <div key={m} className="flex justify-between text-[11px] text-slate-400 pl-3"><span>↳ {m}</span><span>{v.toFixed(0)}€</span></div>
+                      ))}
+                      <div className="flex justify-between text-xs mt-1"><span className="text-slate-400">Gastos desde banco</span><span className="text-red-500">−{gastosBanco.toFixed(0)}€</span></div>
+                      <div className="flex justify-between text-sm border-t border-blue-200 pt-2 mt-2"><span className="font-semibold text-slate-700">Caja banco neta</span><span className={`font-bold text-lg ${cajaBanco >= 0 ? 'text-blue-600' : 'text-red-500'}`}>{cajaBanco.toFixed(0)}€</span></div>
+                    </div>
+                    {/* Total */}
+                    <div className="flex justify-between text-sm p-3 bg-slate-900 rounded-xl">
+                      <span className="font-semibold text-white">Total disponible</span>
+                      <span className="font-bold text-lg text-white">{(cajaEfectivo + cajaBanco).toFixed(0)}€</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Canales */}
+            <div className="bg-white rounded-2xl border border-slate-100 p-4">
+              <h3 className="font-semibold text-slate-900 text-sm mb-4">Reservas por canal</h3>
               {CHANNELS.map(ch => {
                 const count = reservations.filter(r => r.channel === ch).length;
                 if (count === 0) return null;
@@ -727,12 +863,92 @@ export function AdminPanel() {
             </div>
           </div>
         )}
+
+        {/* CUADRE SEMANAL */}
+        {activeTab === 'cuadre' && (() => {
+          // Agrupar por semana (lunes-domingo) según check_in para ingresos y date para gastos
+          type Week = { monday: string; efectivoIn: number; bancoIn: number; efectivoOut: number; bancoOut: number };
+          const weeks: Record<string, Week> = {};
+          function ensureWeek(monday: string): Week {
+            if (!weeks[monday]) weeks[monday] = { monday, efectivoIn: 0, bancoIn: 0, efectivoOut: 0, bancoOut: 0 };
+            return weeks[monday];
+          }
+          // Ingresos: cada pago cobrado (>0) se imputa a la semana del check_in de la reserva
+          reservations.forEach(r => {
+            if (!r.check_in) return;
+            const wk = ensureWeek(mondayOf(r.check_in));
+            const pagos = [
+              { amt: Number(r.deposit_amount) || 0, m: r.deposit_method },
+              { amt: Number(r.checkin_amount) || 0, m: r.checkin_method },
+            ];
+            pagos.forEach(p => {
+              if (p.amt <= 0) return;
+              if (cajaOf(p.m) === 'efectivo') wk.efectivoIn += p.amt; else wk.bancoIn += p.amt;
+            });
+          });
+          // Gastos: imputados a la semana de su fecha
+          expenses.forEach(e => {
+            if (!e.date) return;
+            const wk = ensureWeek(mondayOf(e.date));
+            if (cajaOf(e.payment_method) === 'efectivo') wk.efectivoOut += e.amount; else wk.bancoOut += e.amount;
+          });
+          const orderedWeeks = Object.values(weeks).sort((a, b) => b.monday.localeCompare(a.monday));
+
+          if (orderedWeeks.length === 0) return (
+            <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
+              <Scale className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+              <p className="text-slate-400 text-sm">Aún no hay movimientos para cuadrar</p>
+            </div>
+          );
+
+          return (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-slate-100 p-4">
+                <h3 className="font-semibold text-slate-900 text-sm mb-1">Cuadre de caja semanal</h3>
+                <p className="text-[11px] text-slate-400">Semanas de lunes a domingo. Ingresos por fecha de check-in; gastos por su fecha.</p>
+              </div>
+              {orderedWeeks.map(wk => {
+                const efNeto = wk.efectivoIn - wk.efectivoOut;
+                const bkNeto = wk.bancoIn - wk.bancoOut;
+                const total = efNeto + bkNeto;
+                const isCurrent = mondayOf(today) === wk.monday;
+                return (
+                  <div key={wk.monday} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-800">{fmtWeekLabel(wk.monday)}</span>
+                        {isCurrent && <span className="text-[9px] bg-[#E05A2B] text-white px-2 py-0.5 rounded-full font-medium">Esta semana</span>}
+                      </div>
+                      <span className={`text-sm font-bold ${total >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{total.toFixed(0)}€</span>
+                    </div>
+                    <div className="p-4 grid grid-cols-2 gap-3">
+                      {/* Efectivo */}
+                      <div className="bg-emerald-50 rounded-xl p-3">
+                        <p className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide mb-2">💵 Efectivo</p>
+                        <div className="flex justify-between text-xs mb-0.5"><span className="text-slate-500">Cobrado</span><span className="font-medium text-slate-700">{wk.efectivoIn.toFixed(0)}€</span></div>
+                        <div className="flex justify-between text-xs"><span className="text-slate-500">Gastos</span><span className="text-red-500">−{wk.efectivoOut.toFixed(0)}€</span></div>
+                        <div className="flex justify-between text-sm border-t border-emerald-200 pt-1.5 mt-1.5"><span className="font-semibold text-slate-700">Neto</span><span className={`font-bold ${efNeto >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{efNeto.toFixed(0)}€</span></div>
+                      </div>
+                      {/* Banco */}
+                      <div className="bg-blue-50 rounded-xl p-3">
+                        <p className="text-[10px] font-semibold text-blue-700 uppercase tracking-wide mb-2">🏦 Banco</p>
+                        <div className="flex justify-between text-xs mb-0.5"><span className="text-slate-500">Cobrado</span><span className="font-medium text-slate-700">{wk.bancoIn.toFixed(0)}€</span></div>
+                        <div className="flex justify-between text-xs"><span className="text-slate-500">Gastos</span><span className="text-red-500">−{wk.bancoOut.toFixed(0)}€</span></div>
+                        <div className="flex justify-between text-sm border-t border-blue-200 pt-1.5 mt-1.5"><span className="font-semibold text-slate-700">Neto</span><span className={`font-bold ${bkNeto >= 0 ? 'text-blue-600' : 'text-red-500'}`}>{bkNeto.toFixed(0)}€</span></div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 z-40">
         <div className="flex">
-          {[{ id: 'today', icon: Home, label: 'Hoy' }, { id: 'list', icon: LayoutList, label: 'Reservas' }, { id: 'calendar', icon: CalendarDays, label: 'Calendario' }, { id: 'expenses', icon: Wallet, label: 'Gastos' }, { id: 'stats', icon: BarChart2, label: 'Stats' }].map(tab => (
+          {[{ id: 'today', icon: Home, label: 'Hoy' }, { id: 'list', icon: LayoutList, label: 'Reservas' }, { id: 'calendar', icon: CalendarDays, label: 'Calendario' }, { id: 'expenses', icon: Wallet, label: 'Gastos' }, { id: 'cuadre', icon: Scale, label: 'Cuadre' }, { id: 'stats', icon: BarChart2, label: 'Stats' }].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id as any)}
               className={`flex-1 flex flex-col items-center py-2.5 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
               <tab.icon className="w-5 h-5" />
@@ -775,21 +991,20 @@ export function AdminPanel() {
                   {selectedRes.guest_phone && <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400" /><span>{selectedRes.guest_phone}</span></div>}
                   {selectedRes.guest_email && <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400" /><span>{selectedRes.guest_email}</span></div>}
                   {selectedRes.channel && <div className="flex items-center gap-3"><span className="w-4 text-center text-xs">📲</span><span>{selectedRes.channel}</span></div>}
-                  {selectedRes.payment_method && <div className="flex items-center gap-3"><span className="w-4 text-center text-xs">💳</span><span>{selectedRes.payment_method}</span></div>}
                 </div>
                 <div className="bg-slate-50 rounded-xl p-4 mb-4">
                   <p className="text-xs font-semibold text-slate-600 mb-2">Desglose de pagos</p>
                   <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Total estancia</span><span className="font-semibold">{selectedRes.price_total || 0}€</span></div>
-                  {(selectedRes as any).deposit_amount > 0 && (
+                  {(selectedRes.deposit_amount || 0) > 0 && (
                     <div className="flex justify-between text-sm mb-1.5">
-                      <span className="text-blue-600">🔒 Reserva ({(selectedRes as any).deposit_method})</span>
-                      <span className="font-semibold text-blue-600">{(selectedRes as any).deposit_amount}€</span>
+                      <span className="text-blue-600">🔒 Reserva ({selectedRes.deposit_method})</span>
+                      <span className="font-semibold text-blue-600">{selectedRes.deposit_amount}€</span>
                     </div>
                   )}
-                  {(selectedRes as any).checkin_amount > 0 && (
+                  {(selectedRes.checkin_amount || 0) > 0 && (
                     <div className="flex justify-between text-sm mb-1.5">
-                      <span className="text-emerald-600">🏠 Ingreso ({(selectedRes as any).checkin_method})</span>
-                      <span className="font-semibold text-emerald-600">{(selectedRes as any).checkin_amount}€</span>
+                      <span className="text-emerald-600">🏠 Ingreso ({selectedRes.checkin_method})</span>
+                      <span className="font-semibold text-emerald-600">{selectedRes.checkin_amount}€</span>
                     </div>
                   )}
                   <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5">
@@ -800,6 +1015,23 @@ export function AdminPanel() {
                   </div>
                 </div>
                 {selectedRes.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600">{selectedRes.notes}</div>}
+
+                {/* Botón cobrar rápido */}
+                {!isPaid && (
+                  <button
+                    onClick={() => {
+                      const pend = (selectedRes.price_total || 0) - (selectedRes.price_paid || 0);
+                      setPayingResId(selectedRes.id);
+                      setPayAmount(pend.toFixed(0));
+                      setPayMethod('Efectivo');
+                      setShowPayModal(true);
+                    }}
+                    className="w-full mb-3 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
+                  >
+                    💵 Registrar pago al ingreso
+                  </button>
+                )}
+
                 <div className="flex gap-2">
                   <button onClick={() => handleEdit(selectedRes)} className="flex-1 flex items-center justify-center gap-2 py-3 border border-slate-200 rounded-xl text-sm text-slate-600"><Edit2 className="w-3.5 h-3.5" /> Editar</button>
                   <button onClick={() => handleDelete(selectedRes.id)} className="flex-1 flex items-center justify-center gap-2 py-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-500"><Trash2 className="w-3.5 h-3.5" /> Eliminar</button>
@@ -1008,7 +1240,7 @@ export function AdminPanel() {
                 <h3 className="font-semibold text-slate-900">{editingExpenseId ? 'Editar gasto' : 'Nuevo gasto'}</h3>
                 <button onClick={() => { setShowExpenseForm(false); setEditingExpenseId(null); }} className="p-1.5 hover:bg-slate-100 rounded-xl"><X className="w-4 h-4 text-slate-500" /></button>
               </div>
-                      <form onSubmit={handleExpenseSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
+              <form onSubmit={handleExpenseSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
                   <div className="grid grid-cols-3 gap-2">
@@ -1046,6 +1278,7 @@ export function AdminPanel() {
                       </button>
                     ))}
                   </div>
+                  <p className="text-[10px] text-slate-400 mt-1.5">{cajaOf(expenseForm.payment_method) === 'efectivo' ? 'Se descuenta de la caja de efectivo' : 'Se descuenta de la cuenta bancaria'}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -1062,6 +1295,45 @@ export function AdminPanel() {
                   <button type="submit" className="flex-1 py-3 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold">{editingExpenseId ? 'Guardar' : 'Añadir gasto'}</button>
                 </div>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Quick Pay Modal */}
+      <AnimatePresence>
+        {showPayModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center"
+            onClick={e => { if (e.target === e.currentTarget) setShowPayModal(false); }}>
+            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6"
+              onClick={e => e.stopPropagation()}>
+              <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
+              <h3 className="font-semibold text-slate-900 mb-4">💵 Registrar pago al ingreso</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Importe cobrado (€)</label>
+                  <input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)}
+                    className="w-full border border-slate-200 rounded-xl px-4 py-3 text-lg font-bold focus:outline-none focus:border-emerald-500 text-slate-900" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
+                  <div className="flex flex-wrap gap-2">
+                    {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
+                      <button key={m} type="button" onClick={() => setPayMethod(m)}
+                        className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${payMethod === m ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1.5">{cajaOf(payMethod) === 'efectivo' ? 'Entra a la caja de efectivo' : 'Entra a la cuenta bancaria'}</p>
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => setShowPayModal(false)} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
+                  <button onClick={handleQuickPay} className="flex-1 py-3 bg-emerald-500 text-white rounded-xl text-sm font-semibold">Confirmar cobro</button>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
