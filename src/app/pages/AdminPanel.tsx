@@ -285,25 +285,41 @@ export function AdminPanel() {
   }
 
   // Posición de la barra en píxeles, usando medios días (check-in entra a mediodía, check-out sale a mediodía).
+  // El diente diagonal SOLO se aplica cuando hay otra reserva de la misma habitación que encaja ese día:
+  // - clipStart: alguien hizo check-out el día que esta reserva hace check-in
+  // - clipEnd: alguien hace check-in el día que esta reserva hace check-out
+  // Si la habitación queda libre, la barra termina recta.
   // Devuelve null si la reserva no intersecta el rango visible.
   function getResBar(res: Reservation): { left: number; width: number; clipStart: boolean; clipEnd: boolean } | null {
     const firstDay = toDateStr(days[0]);
     const lastDay = toDateStr(days[days.length - 1]);
     if (res.check_out < firstDay || res.check_in > lastDay) return null;
 
-    // Índice (float) de columna para una fecha; el check-in ocupa media celda (0.5) y el check-out media celda.
     const idxOf = (dateStr: string) => days.findIndex(d => toDateStr(d) === dateStr);
 
     const ciIdx = idxOf(res.check_in);
     const coIdx = idxOf(res.check_out);
 
-    // Inicio real: si el check-in está dentro del rango, media celda a la derecha; si empieza antes, desde el borde izquierdo.
-    const startPx = ciIdx >= 0 ? (ciIdx + 0.5) * COL_W : 0;
-    const clipStart = ciIdx >= 0; // solo cortamos el diente si el check-in es visible
+    // ¿Hay solape con vecinas en la misma habitación?
+    const salienteEnMiEntrada = reservations.some(
+      o => o.id !== res.id && o.room_id === res.room_id && o.check_out === res.check_in
+    );
+    const entranteEnMiSalida = reservations.some(
+      o => o.id !== res.id && o.room_id === res.room_id && o.check_in === res.check_out
+    );
 
-    // Fin real: si el check-out está dentro del rango, media celda; si termina después, hasta el borde derecho.
-    const endPx = coIdx >= 0 ? (coIdx + 0.5) * COL_W : DAYS_VISIBLE * COL_W;
-    const clipEnd = coIdx >= 0;
+    // Si nadie sale el día que entro, arranco en el borde izquierdo de la celda (no a mitad).
+    const startPx = ciIdx >= 0
+      ? (ciIdx + (salienteEnMiEntrada ? 0.5 : 0)) * COL_W
+      : 0;
+    // Si nadie entra el día que salgo, ocupo la celda completa del check-out.
+    const endPx = coIdx >= 0
+      ? (coIdx + (entranteEnMiSalida ? 0.5 : 1)) * COL_W
+      : DAYS_VISIBLE * COL_W;
+
+    // El diente solo se dibuja si el extremo es visible Y hay vecina que encaje.
+    const clipStart = ciIdx >= 0 && salienteEnMiEntrada;
+    const clipEnd = coIdx >= 0 && entranteEnMiSalida;
 
     return { left: startPx, width: Math.max(endPx - startPx, COL_W * 0.5), clipStart, clipEnd };
   }
@@ -621,19 +637,19 @@ export function AdminPanel() {
                               if (!bar) return null;
                               const pending = (res.price_total || 0) - (res.price_paid || 0);
                               const isPaid = pending <= 0 && (res.price_total || 0) > 0;
-                              // Diente diagonal: corta la esquina inferior-izquierda (salida entrante) y superior-derecha (salida saliente)
-                              // El ancho del diente en px es media celda, así encaja con la reserva vecina.
+                              // El diente solo existe si hay reserva vecina ese día (lo decide getResBar).
+                              // Si no hay ninguno, no aplicamos clipPath para conservar las esquinas redondeadas.
                               const tooth = COL_W * 0.5;
-                              const clipStart = bar.clipStart;
-                              const clipEnd = bar.clipEnd;
-                              // polígono: esquinas en orden top-left, top-right, bottom-right, bottom-left
-                              const clipPath = `polygon(${clipStart ? `${tooth}px 0` : '0 0'}, 100% 0, ${clipEnd ? `calc(100% - ${tooth}px) 100%` : '100% 100%'}, 0 100%)`;
+                              const { clipStart, clipEnd } = bar;
+                              const clipPath = (clipStart || clipEnd)
+                                ? `polygon(${clipStart ? `${tooth}px 0` : '0 0'}, 100% 0, ${clipEnd ? `calc(100% - ${tooth}px) 100%` : '100% 100%'}, 0 100%)`
+                                : undefined;
                               return (
                                 <button key={res.id} onClick={() => setSelectedRes(res)}
                                   className="absolute top-1.5 bottom-1.5 flex items-center gap-1 text-white text-[11px] font-medium shadow-sm hover:opacity-90 truncate"
                                   style={{
-                                    left: bar.left,
-                                    width: bar.width,
+                                    left: bar.left + (clipStart ? 0 : 2),
+                                    width: bar.width - (clipStart ? 0 : 2) - (clipEnd ? 0 : 2),
                                     background: prop.color,
                                     zIndex: 10,
                                     clipPath,
