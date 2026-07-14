@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { LogOut, Calendar, Users, Home, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LogOut, Calendar, CalendarDays, Users, Home, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -33,6 +33,23 @@ function fmtMonth(key: string): string {
   return d.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 }
 
+function toDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Días del mes en una rejilla lunes-domingo, con relleno de celdas vacías al inicio.
+function buildMonthGrid(monthKey: string): (Date | null)[] {
+  const [y, m] = monthKey.split('-').map(Number);
+  const first = new Date(y, m - 1, 1);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  // getDay(): 0=domingo. Queremos lunes=0.
+  const offset = (first.getDay() + 6) % 7;
+  const cells: (Date | null)[] = [];
+  for (let i = 0; i < offset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(y, m - 1, d));
+  return cells;
+}
+
 export function OwnerPanel() {
   const [token, setToken] = useState(() => localStorage.getItem('owner_token') || '');
   const [password, setPassword] = useState('');
@@ -40,6 +57,7 @@ export function OwnerPanel() {
   const [reservations, setReservations] = useState<OwnerReservation[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
   const isLoggedIn = !!token;
 
@@ -115,8 +133,13 @@ export function OwnerPanel() {
     </div>
   );
 
-  // Agrupar por mes
-  const months = Array.from(new Set(reservations.map(r => monthKey(r.check_in)))).sort().reverse();
+  // Navegación libre por meses (no solo los que tienen reservas)
+  function shiftMonth(key: string, delta: number): string {
+    const [y, m] = key.split('-').map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+
   const monthRes = reservations
     .filter(r => monthKey(r.check_in) === selectedMonth)
     .sort((a, b) => a.check_in.localeCompare(b.check_in));
@@ -124,10 +147,6 @@ export function OwnerPanel() {
   const totalBruto = monthRes.reduce((a, r) => a + r.price_total, 0);
   const totalComision = monthRes.reduce((a, r) => a + r.commission_amount, 0);
   const totalNeto = monthRes.reduce((a, r) => a + r.owner_income, 0);
-
-  const monthIdx = months.indexOf(selectedMonth);
-  const hasPrev = monthIdx < months.length - 1;
-  const hasNext = monthIdx > 0;
 
   return (
     <div className="min-h-screen bg-slate-50 pb-10">
@@ -149,25 +168,128 @@ export function OwnerPanel() {
       <div className="max-w-3xl mx-auto px-4 py-4 space-y-4">
 
         {/* Selector de mes */}
-        {months.length > 0 && (
-          <div className="bg-white rounded-2xl border border-slate-100 p-3 flex items-center justify-between">
-            <button
-              onClick={() => hasPrev && setSelectedMonth(months[monthIdx + 1])}
-              disabled={!hasPrev}
-              className={`p-2 rounded-lg ${hasPrev ? 'hover:bg-slate-100 text-slate-600' : 'text-slate-200'}`}>
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-sm font-semibold text-slate-800 capitalize">
-              {fmtMonth(selectedMonth)}
-            </span>
-            <button
-              onClick={() => hasNext && setSelectedMonth(months[monthIdx - 1])}
-              disabled={!hasNext}
-              className={`p-2 rounded-lg ${hasNext ? 'hover:bg-slate-100 text-slate-600' : 'text-slate-200'}`}>
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
+        <div className="bg-white rounded-2xl border border-slate-100 p-3 flex items-center justify-between">
+          <button
+            onClick={() => { setSelectedMonth(m => shiftMonth(m, -1)); setSelectedDay(null); }}
+            className="p-2 rounded-lg hover:bg-slate-100 text-slate-600">
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => { setSelectedMonth(new Date().toISOString().slice(0, 7)); setSelectedDay(null); }}
+            className="text-sm font-semibold text-slate-800 capitalize hover:text-[#8B5CF6] transition-colors">
+            {fmtMonth(selectedMonth)}
+          </button>
+          <button
+            onClick={() => { setSelectedMonth(m => shiftMonth(m, 1)); setSelectedDay(null); }}
+            className="p-2 rounded-lg hover:bg-slate-100 text-slate-600">
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Calendario del mes */}
+        {(() => {
+          const cells = buildMonthGrid(selectedMonth);
+          const today = toDateStr(new Date());
+
+          // Una noche está ocupada si cae en [check_in, check_out).
+          // El día de check_out queda libre (el huésped se va esa mañana).
+          function resOf(dateStr: string): OwnerReservation | undefined {
+            return reservations.find(r => dateStr >= r.check_in && dateStr < r.check_out);
+          }
+
+          const nochesOcupadas = cells.filter(d => d && resOf(toDateStr(d))).length;
+          const diasDelMes = cells.filter(Boolean).length;
+          const ocupacion = diasDelMes ? Math.round((nochesOcupadas / diasDelMes) * 100) : 0;
+
+          return (
+            <div className="bg-white rounded-2xl border border-slate-100 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4 text-[#8B5CF6]" />
+                  <h2 className="font-semibold text-slate-900 text-sm">Ocupación</h2>
+                </div>
+                <span className="text-xs text-slate-500">
+                  {nochesOcupadas} {nochesOcupadas === 1 ? 'noche' : 'noches'} · {ocupacion}%
+                </span>
+              </div>
+
+              {/* Cabecera de días */}
+              <div className="grid grid-cols-7 gap-1 mb-1">
+                {['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((d, i) => (
+                  <div key={i} className="text-center text-[10px] font-medium text-slate-400 py-1">{d}</div>
+                ))}
+              </div>
+
+              {/* Rejilla */}
+              <div className="grid grid-cols-7 gap-1">
+                {cells.map((d, i) => {
+                  if (!d) return <div key={i} />;
+                  const ds = toDateStr(d);
+                  const res = resOf(ds);
+                  const isToday = ds === today;
+                  const isCheckIn = reservations.some(r => r.check_in === ds);
+                  const isCheckOut = reservations.some(r => r.check_out === ds);
+
+                  return (
+                    <button key={i}
+                      onClick={() => res && setSelectedDay(selectedDay === ds ? null : ds)}
+                      title={res ? `${res.guest_name} · ${res.num_persons} pers.` : 'Libre'}
+                      className={`aspect-square rounded-lg flex flex-col items-center justify-center relative transition-colors ${
+                        res
+                          ? 'bg-[#8B5CF6] text-white hover:bg-[#7C3AED] cursor-pointer'
+                          : 'bg-slate-50 text-slate-400 cursor-default'
+                      } ${isToday ? 'ring-2 ring-[#E05A2B] ring-offset-1' : ''} ${
+                        selectedDay === ds ? 'ring-2 ring-slate-900 ring-offset-1' : ''
+                      }`}>
+                      <span className={`text-xs ${res ? 'font-semibold' : ''}`}>{d.getDate()}</span>
+                      {/* Marca de entrada/salida */}
+                      {isCheckIn && <span className="absolute bottom-0.5 w-1 h-1 rounded-full bg-white/70" />}
+                      {isCheckOut && !res && <span className="absolute bottom-0.5 w-1 h-1 rounded-full bg-[#8B5CF6]/40" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Leyenda */}
+              <div className="flex items-center gap-4 mt-3 pt-3 border-t border-slate-100">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded bg-[#8B5CF6]" />
+                  <span className="text-[10px] text-slate-500">Ocupado</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded bg-slate-100" />
+                  <span className="text-[10px] text-slate-500">Libre</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded border-2 border-[#E05A2B]" />
+                  <span className="text-[10px] text-slate-500">Hoy</span>
+                </div>
+              </div>
+
+              {/* Detalle del día seleccionado */}
+              {selectedDay && (() => {
+                const r = resOf(selectedDay);
+                if (!r) return null;
+                return (
+                  <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                    className="mt-3 bg-purple-50 rounded-xl p-3 border border-purple-100">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs font-semibold text-slate-800">{r.guest_name}</p>
+                      {r.guest_nationality && (
+                        <span className="text-[10px] bg-white text-slate-500 px-2 py-0.5 rounded-full">
+                          {r.guest_nationality}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      {fmtDate(r.check_in)} → {fmtDate(r.check_out)} · {r.nights} {r.nights === 1 ? 'noche' : 'noches'} · {r.num_persons} {r.num_persons === 1 ? 'persona' : 'personas'}
+                    </p>
+                  </motion.div>
+                );
+              })()}
+            </div>
+          );
+        })()}
 
         {/* Resumen del mes */}
         <div className="bg-white rounded-2xl border border-slate-100 p-4">
