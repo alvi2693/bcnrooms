@@ -27,6 +27,21 @@ function cajaOf(method?: string): 'efectivo' | 'banco' {
   return CASH_METHODS.includes((method || '').trim()) ? 'efectivo' : 'banco';
 }
 
+// Pisos gestionados para terceros: el dinero no es nuestro, solo la comisión.
+const MANAGED_ROOM_IDS = [7]; // Sagrada Família
+const DEFAULT_COMMISSION_PER_PAX_NIGHT = 4;
+
+function isManaged(room_id: number): boolean {
+  return MANAGED_ROOM_IDS.includes(Number(room_id));
+}
+
+// Comisión sugerida (solo valor por defecto al crear; el importe real se guarda editable)
+function suggestCommission(room_id: number, num_persons: number, check_in: string, check_out: string): number {
+  if (!isManaged(room_id)) return 0;
+  const nights = calcNights(check_in, check_out);
+  return DEFAULT_COMMISSION_PER_PAX_NIGHT * (Number(num_persons) || 1) * nights;
+}
+
 const NATIONALITIES = [
   'Alemana','Austriaca','Belga','Búlgara','Checa','Croata','Danesa','Eslovaca','Eslovena','Española',
   'Estonia','Finlandesa','Francesa','Griega','Húngara','Irlandesa','Islandesa','Italiana','Letona',
@@ -47,6 +62,7 @@ interface Reservation {
   payment_method?: string; channel?: string; notes?: string;
   deposit_amount?: number; deposit_method?: string;
   checkin_amount?: number; checkin_method?: string;
+  commission_amount?: number; collected_by_us?: boolean;
   created_at?: string;
 }
 
@@ -62,6 +78,7 @@ const emptyForm = {
   price_per_night: '', price_total: '',
   deposit_amount: '', deposit_method: 'Transferencia',
   checkin_amount: '', checkin_method: 'Efectivo',
+  commission_amount: '', collected_by_us: false,
   channel: 'WhatsApp', notes: '',
 };
 
@@ -81,6 +98,51 @@ function fmtDate(str: string): string {
 function calcNights(a: string, b: string): number {
   if (!a || !b) return 0;
   return Math.ceil((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+}
+
+// Qué pagos de una reserva entran REALMENTE a nuestra caja.
+// - Piso propio: todo lo cobrado (deposit + checkin), cada uno con su método.
+// - Piso gestionado + cobramos nosotros: entra todo, pero generamos deuda con el propietario.
+// - Piso gestionado + cobra el propietario: solo entra la comisión.
+type CajaPago = { amt: number; method?: string };
+function pagosACaja(r: Reservation): CajaPago[] {
+  const dep = Number(r.deposit_amount) || 0;
+  const chk = Number(r.checkin_amount) || 0;
+  const commission = Number(r.commission_amount) || 0;
+
+  if (!isManaged(r.room_id)) {
+    return [
+      { amt: dep, method: r.deposit_method },
+      { amt: chk, method: r.checkin_method },
+    ];
+  }
+
+  // Piso gestionado
+  if (r.collected_by_us) {
+    // Cobramos el total: entra todo a caja (la deuda al propietario se muestra aparte)
+    return [
+      { amt: dep, method: r.deposit_method },
+      { amt: chk, method: r.checkin_method },
+    ];
+  }
+
+  // El propietario cobra directo: a nuestra caja solo entra la comisión.
+  // Usamos el método del depósito, que es como solemos recibirla.
+  return [{ amt: commission, method: r.deposit_method || 'Transferencia' }];
+}
+
+// Deuda pendiente de liquidar al propietario (solo si cobramos nosotros su dinero)
+function deudaPropietario(r: Reservation): number {
+  if (!isManaged(r.room_id) || !r.collected_by_us) return 0;
+  const paid = Number(r.price_paid) || 0;
+  const commission = Number(r.commission_amount) || 0;
+  return Math.max(0, paid - commission);
+}
+
+// Ingreso real nuestro por una reserva (lo que de verdad ganamos)
+function ingresoNuestro(r: Reservation): number {
+  if (isManaged(r.room_id)) return Number(r.commission_amount) || 0;
+  return Number(r.price_paid) || 0;
 }
 
 // --- Helpers de cuadre semanal (lunes-domingo) ---
@@ -189,6 +251,8 @@ export function AdminPanel() {
         price_paid: r.price_paid ? Number(r.price_paid) : 0,
         deposit_amount: r.deposit_amount ? Number(r.deposit_amount) : 0,
         checkin_amount: r.checkin_amount ? Number(r.checkin_amount) : 0,
+        commission_amount: r.commission_amount ? Number(r.commission_amount) : 0,
+        collected_by_us: !!r.collected_by_us,
         num_persons: Number(r.num_persons),
       })));
     } catch {}
@@ -217,6 +281,8 @@ export function AdminPanel() {
       price_per_night: form.price_per_night ? Number(form.price_per_night) : null,
       deposit_amount: Number(form.deposit_amount) || 0,
       checkin_amount: Number(form.checkin_amount) || 0,
+      commission_amount: Number(form.commission_amount) || 0,
+      collected_by_us: !!form.collected_by_us,
     };
     const url = editingId ? `${BACKEND_URL}/admin/reservations/${editingId}` : `${BACKEND_URL}/admin/reservations`;
     const res = await fetch(url, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
@@ -245,6 +311,8 @@ export function AdminPanel() {
       deposit_method: r.deposit_method || 'Transferencia',
       checkin_amount: r.checkin_amount?.toString() || '',
       checkin_method: r.checkin_method || 'Efectivo',
+      commission_amount: r.commission_amount?.toString() || '',
+      collected_by_us: !!r.collected_by_us,
       channel: r.channel || 'WhatsApp', notes: r.notes || ''
     });
     setEditingId(r.id); setSelectedRes(null); setShowForm(true);
@@ -280,7 +348,13 @@ export function AdminPanel() {
       const u = { ...f, [key]: val };
       const n = calcNights(key === 'check_in' ? val : f.check_in, key === 'check_out' ? val : f.check_out);
       const pn = parseFloat(f.price_per_night) || 0;
-      return { ...u, price_total: n > 0 && pn > 0 ? (pn * n).toFixed(2) : u.price_total };
+      const next = { ...u, price_total: n > 0 && pn > 0 ? (pn * n).toFixed(2) : u.price_total };
+      // En pisos gestionados, sugerimos la comisión automáticamente (sigue siendo editable)
+      if (isManaged(Number(next.room_id))) {
+        const sug = suggestCommission(Number(next.room_id), Number(next.num_persons), next.check_in, next.check_out);
+        if (sug > 0) next.commission_amount = sug.toString();
+      }
+      return next;
     });
   }
 
@@ -811,18 +885,19 @@ export function AdminPanel() {
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
               <h3 className="font-semibold text-slate-900 text-sm mb-4">💵 Balance por caja</h3>
               {(() => {
-                // Cobrado por caja (cada pago según su método)
+                // Cobrado por caja. pagosACaja() ya descuenta el dinero que no es nuestro
+                // (en pisos gestionados donde cobra el propietario, solo entra la comisión).
                 let efectivoCobrado = 0, bancoCobrado = 0;
                 const bancoDesglose: Record<string, number> = {};
                 reservations.forEach(r => {
-                  const pagos = [
-                    { amt: Number(r.deposit_amount) || 0, m: r.deposit_method },
-                    { amt: Number(r.checkin_amount) || 0, m: r.checkin_method },
-                  ];
-                  pagos.forEach(p => {
+                  pagosACaja(r).forEach(p => {
                     if (p.amt <= 0) return;
-                    if (cajaOf(p.m) === 'efectivo') efectivoCobrado += p.amt;
-                    else { bancoCobrado += p.amt; const k = (p.m || 'Otros').trim() || 'Otros'; bancoDesglose[k] = (bancoDesglose[k] || 0) + p.amt; }
+                    if (cajaOf(p.method) === 'efectivo') efectivoCobrado += p.amt;
+                    else {
+                      bancoCobrado += p.amt;
+                      const k = (p.method || 'Otros').trim() || 'Otros';
+                      bancoDesglose[k] = (bancoDesglose[k] || 0) + p.amt;
+                    }
                   });
                 });
                 // Gastos por caja
@@ -833,6 +908,11 @@ export function AdminPanel() {
                 });
                 const cajaEfectivo = efectivoCobrado - gastosEfectivo;
                 const cajaBanco = bancoCobrado - gastosBanco;
+
+                // Dinero en nuestra caja que NO es nuestro: hay que liquidarlo al propietario
+                const deudaTotal = reservations.reduce((a, r) => a + deudaPropietario(r), 0);
+                const disponible = cajaEfectivo + cajaBanco;
+
                 return (
                   <div className="space-y-3">
                     {/* Caja efectivo */}
@@ -850,11 +930,27 @@ export function AdminPanel() {
                       <div className="flex justify-between text-xs mt-1"><span className="text-slate-400">Gastos desde banco</span><span className="text-red-500">−{gastosBanco.toFixed(0)}€</span></div>
                       <div className="flex justify-between text-sm border-t border-blue-200 pt-2 mt-2"><span className="font-semibold text-slate-700">Caja banco neta</span><span className={`font-bold text-lg ${cajaBanco >= 0 ? 'text-blue-600' : 'text-red-500'}`}>{cajaBanco.toFixed(0)}€</span></div>
                     </div>
-                    {/* Total */}
+                    {/* Total en caja */}
                     <div className="flex justify-between text-sm p-3 bg-slate-900 rounded-xl">
-                      <span className="font-semibold text-white">Total disponible</span>
-                      <span className="font-bold text-lg text-white">{(cajaEfectivo + cajaBanco).toFixed(0)}€</span>
+                      <span className="font-semibold text-white">Total en caja</span>
+                      <span className="font-bold text-lg text-white">{disponible.toFixed(0)}€</span>
                     </div>
+                    {/* Deuda con el propietario de Sagrada Família */}
+                    {deudaTotal > 0 && (
+                      <div className="bg-purple-50 rounded-xl p-3 border border-purple-100">
+                        <div className="flex justify-between text-sm mb-1">
+                          <span className="text-slate-600 font-medium">🏠 Pendiente liquidar a Sagrada Família</span>
+                          <span className="font-bold text-purple-600">−{deudaTotal.toFixed(0)}€</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mb-2">Dinero cobrado por nosotros que le corresponde al propietario</p>
+                        <div className="flex justify-between text-sm border-t border-purple-200 pt-2">
+                          <span className="font-semibold text-slate-700">Realmente nuestro</span>
+                          <span className={`font-bold text-lg ${(disponible - deudaTotal) >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            {(disponible - deudaTotal).toFixed(0)}€
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -889,17 +985,13 @@ export function AdminPanel() {
             if (!weeks[monday]) weeks[monday] = { monday, efectivoIn: 0, bancoIn: 0, efectivoOut: 0, bancoOut: 0 };
             return weeks[monday];
           }
-          // Ingresos: cada pago cobrado (>0) se imputa a la semana del check_in de la reserva
+          // Ingresos: solo lo que REALMENTE entra a nuestra caja (pagosACaja filtra el dinero ajeno)
           reservations.forEach(r => {
             if (!r.check_in) return;
             const wk = ensureWeek(mondayOf(r.check_in));
-            const pagos = [
-              { amt: Number(r.deposit_amount) || 0, m: r.deposit_method },
-              { amt: Number(r.checkin_amount) || 0, m: r.checkin_method },
-            ];
-            pagos.forEach(p => {
+            pagosACaja(r).forEach(p => {
               if (p.amt <= 0) return;
-              if (cajaOf(p.m) === 'efectivo') wk.efectivoIn += p.amt; else wk.bancoIn += p.amt;
+              if (cajaOf(p.method) === 'efectivo') wk.efectivoIn += p.amt; else wk.bancoIn += p.amt;
             });
           });
           // Gastos: imputados a la semana de su fecha
@@ -1030,6 +1122,33 @@ export function AdminPanel() {
                     }
                   </div>
                 </div>
+                {/* Piso gestionado: desglose de comisión y liquidación */}
+                {isManaged(selectedRes.room_id) && (
+                  <div className="bg-purple-50 rounded-xl p-4 mb-4 border border-purple-100">
+                    <p className="text-xs font-semibold text-slate-700 mb-2">🏠 Piso gestionado</p>
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span className="text-slate-500">Nuestra comisión</span>
+                      <span className="font-bold text-emerald-600">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
+                    </div>
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span className="text-slate-500">Para el propietario</span>
+                      <span className="font-semibold text-purple-700">
+                        {((selectedRes.price_total || 0) - (selectedRes.commission_amount || 0)).toFixed(0)}€
+                      </span>
+                    </div>
+                    <div className="border-t border-purple-200 pt-2 mt-2">
+                      {selectedRes.collected_by_us ? (
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-500">Cobramos nosotros · pendiente liquidar</span>
+                          <span className="font-bold text-[#E05A2B]">{deudaPropietario(selectedRes).toFixed(0)}€</span>
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-slate-500">El propietario cobra directo. Solo recibimos la comisión.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {selectedRes.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600">{selectedRes.notes}</div>}
 
                 {/* Botón cobrar rápido */}
@@ -1228,6 +1347,48 @@ export function AdminPanel() {
                     </div>
                   </div>
                 )}
+                {/* Comisión de gestión — solo pisos que administramos para terceros */}
+                {isManaged(Number(form.room_id)) && (
+                  <div className="bg-purple-50 rounded-xl p-4 border border-purple-100">
+                    <p className="text-xs font-semibold text-slate-700 mb-1">🏠 Piso gestionado — Comisión</p>
+                    <p className="text-[10px] text-slate-500 mb-3">
+                      Este piso no es nuestro. Solo la comisión entra en nuestro cuadre.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div>
+                        <label className="text-[10px] text-slate-500 mb-1 block">Comisión (€)</label>
+                        <input type="number" value={form.commission_amount}
+                          onChange={e => setForm(f => ({ ...f, commission_amount: e.target.value }))}
+                          className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#8B5CF6]"
+                          placeholder="0" />
+                      </div>
+                      <div className="flex items-end">
+                        <button type="button"
+                          onClick={() => setForm(f => ({
+                            ...f,
+                            commission_amount: suggestCommission(Number(f.room_id), Number(f.num_persons), f.check_in, f.check_out).toString()
+                          }))}
+                          className="w-full py-2.5 rounded-xl text-[11px] font-medium border border-purple-200 bg-white text-purple-700 hover:bg-purple-50 transition-colors">
+                          Calcular {DEFAULT_COMMISSION_PER_PAX_NIGHT}€ × {form.num_persons || 1} pax × {calcNights(form.check_in, form.check_out) || 0} noches
+                        </button>
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={form.collected_by_us}
+                        onChange={e => setForm(f => ({ ...f, collected_by_us: e.target.checked }))}
+                        className="w-4 h-4 rounded border-slate-300 accent-[#8B5CF6]" />
+                      <span className="text-xs text-slate-600">Cobramos nosotros el total (hay que liquidar al propietario)</span>
+                    </label>
+                    {form.price_total && form.commission_amount && (
+                      <div className="mt-3 pt-3 border-t border-purple-200 space-y-1 text-xs">
+                        <div className="flex justify-between"><span className="text-slate-500">Precio estancia</span><span className="font-medium">{form.price_total}€</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Nuestra comisión</span><span className="font-semibold text-emerald-600">{form.commission_amount}€</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Para el propietario</span><span className="font-semibold text-purple-700">{(Number(form.price_total) - Number(form.commission_amount)).toFixed(0)}€</span></div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Notas</label>
                   <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B] resize-none" placeholder="Info adicional..." />
