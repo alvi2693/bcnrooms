@@ -22,9 +22,38 @@ const PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Depósito bancario', 'Pay
 const EXPENSE_CATEGORIES = ['🛋️ Mobiliario', '🔧 Mantenimiento', '🧹 Limpieza', '💡 Suministros', '🏠 Alquiler/Hipoteca', '📦 Equipamiento', '📋 Otros'];
 
 // Un método se clasifica en 'Efectivo' o en 'Banco' (todo lo que entra a la cuenta bancaria).
+type Caja = 'born' | 'sagrera' | 'bbva';
 const CASH_METHODS = ['Efectivo'];
-function cajaOf(method?: string): 'efectivo' | 'banco' {
-  return CASH_METHODS.includes((method || '').trim()) ? 'efectivo' : 'banco';
+
+const CAJAS_INFO: { id: Caja; label: string; icon: string; color: string; bg: string; border: string }[] = [
+  { id: 'born',    label: 'Caja El Born',  icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' },
+  { id: 'sagrera', label: 'Caja Sagrera',  icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-200' },
+  { id: 'bbva',    label: 'Cuenta BBVA',   icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',  border: 'border-slate-300' },
+];
+
+const ROOM_TO_PROPERTY: Record<number, string> = {
+  1: 'sagrera',
+  2: 'born', 3: 'born', 4: 'born', 5: 'born', 6: 'born',
+  7: 'sagrada',
+};
+
+function isCash(method?: string): boolean {
+  return CASH_METHODS.includes((method || '').trim());
+}
+
+// Efectivo -> caja del piso. Cualquier otro método -> BBVA.
+function cajaDeReserva(room_id: number, method?: string): Caja {
+  if (!isCash(method)) return 'bbva';
+  return ROOM_TO_PROPERTY[Number(room_id)] === 'born' ? 'born' : 'sagrera';
+}
+
+function cajaDeGasto(property_id: string, method?: string): Caja {
+  if (!isCash(method)) return 'bbva';
+  return property_id === 'born' ? 'born' : 'sagrera';
+}
+
+function cajaLabel(c: Caja): string {
+  return CAJAS_INFO.find(x => x.id === c)!.label;
 }
 
 // Pisos gestionados para terceros: el dinero no es nuestro, solo la comisión.
@@ -63,6 +92,7 @@ interface Reservation {
   deposit_amount?: number; deposit_method?: string;
   checkin_amount?: number; checkin_method?: string;
   commission_amount?: number; collected_by_us?: boolean;
+  settled_at?: string | null; settled_method?: string | null;
   created_at?: string;
 }
 
@@ -102,13 +132,12 @@ function calcNights(a: string, b: string): number {
 
 // Qué pagos de una reserva entran REALMENTE a nuestra caja.
 // - Piso propio: todo lo cobrado (deposit + checkin), cada uno con su método.
-// - Piso gestionado + cobramos nosotros: entra todo, pero generamos deuda con el propietario.
-// - Piso gestionado + cobra el propietario: solo entra la comisión.
+// - Piso gestionado: solo la comisión, y únicamente cuando ya está liquidada.
 type CajaPago = { amt: number; method?: string };
+
 function pagosACaja(r: Reservation): CajaPago[] {
   const dep = Number(r.deposit_amount) || 0;
   const chk = Number(r.checkin_amount) || 0;
-  const commission = Number(r.commission_amount) || 0;
 
   if (!isManaged(r.room_id)) {
     return [
@@ -117,32 +146,30 @@ function pagosACaja(r: Reservation): CajaPago[] {
     ];
   }
 
-  // Piso gestionado
-  if (r.collected_by_us) {
-    // Cobramos el total: entra todo a caja (la deuda al propietario se muestra aparte)
-    return [
-      { amt: dep, method: r.deposit_method },
-      { amt: chk, method: r.checkin_method },
-    ];
+  // Piso gestionado (Sagrada). El dinero del huésped nunca es nuestro.
+  // Solo entra la comisión, y únicamente cuando ya está liquidada.
+  if (r.settled_at) {
+    return [{ amt: Number(r.commission_amount) || 0, method: r.settled_method || 'Efectivo' }];
   }
-
-  // El propietario cobra directo: a nuestra caja solo entra la comisión.
-  // Usamos el método del depósito, que es como solemos recibirla.
-  return [{ amt: commission, method: r.deposit_method || 'Transferencia' }];
+  return [];
 }
 
-// Deuda pendiente de liquidar al propietario (solo si cobramos nosotros su dinero)
-function deudaPropietario(r: Reservation): number {
-  if (!isManaged(r.room_id) || !r.collected_by_us) return 0;
-  const paid = Number(r.price_paid) || 0;
-  const commission = Number(r.commission_amount) || 0;
-  return Math.max(0, paid - commission);
+// La comisión liquidada entra en la caja según el método elegido al liquidar.
+// Efectivo -> caja Sagrera (Sagrada no tiene caja propia). Cualquier otro -> BBVA.
+function cajaDeComision(method?: string | null): Caja {
+  return isCash(method || undefined) ? 'sagrera' : 'bbva';
 }
 
-// Ingreso real nuestro por una reserva (lo que de verdad ganamos)
-function ingresoNuestro(r: Reservation): number {
-  if (isManaged(r.room_id)) return Number(r.commission_amount) || 0;
-  return Number(r.price_paid) || 0;
+// Caja destino de un pago de reserva, contemplando pisos gestionados.
+function cajaDePago(r: Reservation, method?: string): Caja {
+  if (isManaged(r.room_id)) return cajaDeComision(method);
+  return cajaDeReserva(r.room_id, method);
+}
+
+// Comisión que el propietario nos debe (aún sin liquidar)
+function comisionPendiente(r: Reservation): number {
+  if (!isManaged(r.room_id) || r.settled_at) return 0;
+  return Number(r.commission_amount) || 0;
 }
 
 // --- Helpers de cuadre semanal (lunes-domingo) ---
@@ -213,6 +240,9 @@ export function AdminPanel() {
   const [payMethod, setPayMethod] = useState('Efectivo');
   const [payingResId, setPayingResId] = useState<number | null>(null);
   const [pushEnabled, setPushEnabled] = useState(false);
+  const [showSettleModal, setShowSettleModal] = useState(false);
+  const [settleMethod, setSettleMethod] = useState<'Efectivo' | 'BBVA'>('Efectivo');
+  const [settleTargetId, setSettleTargetId] = useState<number | null>(null);
 
   const DAYS_VISIBLE = 14;
   const COL_W = 52;
@@ -253,6 +283,8 @@ export function AdminPanel() {
         checkin_amount: r.checkin_amount ? Number(r.checkin_amount) : 0,
         commission_amount: r.commission_amount ? Number(r.commission_amount) : 0,
         collected_by_us: !!r.collected_by_us,
+        settled_at: r.settled_at ? r.settled_at.split('T')[0] : null,
+        settled_method: r.settled_method || null,
         num_persons: Number(r.num_persons),
       })));
     } catch {}
@@ -408,6 +440,34 @@ export function AdminPanel() {
     setShowPayModal(false);
     setPayAmount('');
     setPayingResId(null);
+    setSelectedRes(null);
+    fetchReservations();
+  }
+
+  // Liquida una reserva concreta (settleTargetId) o todas las pendientes si es null.
+  async function handleSettleCommissions() {
+    const pendientes = settleTargetId
+      ? reservations.filter(r => r.id === settleTargetId)
+      : reservations.filter(r => isManaged(r.room_id) && !r.settled_at);
+    for (const r of pendientes) {
+      await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/settle`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ settled_method: settleMethod }),
+      });
+    }
+    setShowSettleModal(false);
+    setSettleTargetId(null);
+    setSelectedRes(null);
+    fetchReservations();
+  }
+
+  async function handleUnsettle(id: number) {
+    if (!confirm('¿Marcar esta comisión como no cobrada?')) return;
+    await fetch(`${BACKEND_URL}/admin/reservations/${id}/unsettle`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    });
     setSelectedRes(null);
     fetchReservations();
   }
@@ -617,6 +677,11 @@ export function AdminPanel() {
                           {isActive && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">Activo</span>}
                           {isPast && <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Pasado</span>}
                           {isPaid && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">✓ Pagado</span>}
+                          {isManaged(r.room_id) && (
+                            r.settled_at
+                              ? <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">✓ Comisión cobrada</span>
+                              : <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Comisión pendiente</span>
+                          )}
                         </div>
                         <div className="flex gap-1 flex-shrink-0">
                           <button onClick={e => { e.stopPropagation(); handleEdit(r); }} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
@@ -783,23 +848,31 @@ export function AdminPanel() {
                     <span className="text-xs font-bold uppercase tracking-wide" style={{ color: prop.color }}>{prop.name}</span>
                   </div>
                   <div className="divide-y divide-slate-100">
-                    {propExpenses.map(ex => (
-                      <div key={ex.id} className="flex items-center gap-3 p-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-xs text-slate-500">{ex.category}</span>
-                            <span className="text-[10px] text-slate-400">{fmtDate(ex.date)}</span>
-                            {ex.payment_method && <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${cajaOf(ex.payment_method) === 'efectivo' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>{ex.payment_method}</span>}
+                    {propExpenses.map(ex => {
+                      const cj = cajaDeGasto(ex.property_id, ex.payment_method);
+                      const info = CAJAS_INFO.find(c => c.id === cj)!;
+                      return (
+                        <div key={ex.id} className="flex items-center gap-3 p-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                              <span className="text-xs text-slate-500">{ex.category}</span>
+                              <span className="text-[10px] text-slate-400">{fmtDate(ex.date)}</span>
+                              {ex.payment_method && (
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${info.bg} ${info.color}`}>
+                                  {ex.payment_method} · {info.icon} {info.label}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
                           </div>
-                          <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
+                          <span className="text-sm font-bold text-red-500 flex-shrink-0">−{ex.amount}€</span>
+                          <div className="flex gap-1 flex-shrink-0">
+                            <button onClick={() => handleExpenseEdit(ex)} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleExpenseDelete(ex.id)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
                         </div>
-                        <span className="text-sm font-bold text-red-500 flex-shrink-0">−{ex.amount}€</span>
-                        <div className="flex gap-1 flex-shrink-0">
-                          <button onClick={() => handleExpenseEdit(ex)} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
-                          <button onClick={() => handleExpenseDelete(ex.id)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div className="flex justify-between px-4 py-2.5 bg-slate-50">
                       <span className="text-xs text-slate-500 font-medium">Total gastos</span>
                       <span className="text-xs font-bold text-red-500">{propExpenses.reduce((a, e) => a + e.amount, 0)}€</span>
@@ -881,75 +954,110 @@ export function AdminPanel() {
               );
             })}
 
-            {/* Balance por caja: Efectivo vs Banco */}
+            {/* Balance por caja */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
-              <h3 className="font-semibold text-slate-900 text-sm mb-4">💵 Balance por caja</h3>
+              <h3 className="font-semibold text-slate-900 text-sm mb-4">💰 Balance por caja</h3>
               {(() => {
-                // Cobrado por caja. pagosACaja() ya descuenta el dinero que no es nuestro
-                // (en pisos gestionados donde cobra el propietario, solo entra la comisión).
-                let efectivoCobrado = 0, bancoCobrado = 0;
-                const bancoDesglose: Record<string, number> = {};
+                const ingresos: Record<Caja, number> = { born: 0, sagrera: 0, bbva: 0 };
+                const gastos: Record<Caja, number> = { born: 0, sagrera: 0, bbva: 0 };
+
                 reservations.forEach(r => {
                   pagosACaja(r).forEach(p => {
                     if (p.amt <= 0) return;
-                    if (cajaOf(p.method) === 'efectivo') efectivoCobrado += p.amt;
-                    else {
-                      bancoCobrado += p.amt;
-                      const k = (p.method || 'Otros').trim() || 'Otros';
-                      bancoDesglose[k] = (bancoDesglose[k] || 0) + p.amt;
-                    }
+                    ingresos[cajaDePago(r, p.method)] += p.amt;
                   });
                 });
-                // Gastos por caja
-                let gastosEfectivo = 0, gastosBanco = 0;
-                expenses.forEach(e => {
-                  if (cajaOf(e.payment_method) === 'efectivo') gastosEfectivo += e.amount;
-                  else gastosBanco += e.amount;
-                });
-                const cajaEfectivo = efectivoCobrado - gastosEfectivo;
-                const cajaBanco = bancoCobrado - gastosBanco;
 
-                // Dinero en nuestra caja que NO es nuestro: hay que liquidarlo al propietario
-                const deudaTotal = reservations.reduce((a, r) => a + deudaPropietario(r), 0);
-                const disponible = cajaEfectivo + cajaBanco;
+                expenses.forEach(e => {
+                  gastos[cajaDeGasto(e.property_id, e.payment_method)] += e.amount;
+                });
+
+                const total = CAJAS_INFO.reduce((a, c) => a + ingresos[c.id] - gastos[c.id], 0);
 
                 return (
                   <div className="space-y-3">
-                    {/* Caja efectivo */}
-                    <div className="bg-emerald-50 rounded-xl p-3">
-                      <div className="flex justify-between text-sm mb-1"><span className="text-slate-600 font-medium">💵 Efectivo cobrado</span><span className="font-bold text-emerald-600">{efectivoCobrado.toFixed(0)}€</span></div>
-                      <div className="flex justify-between text-xs"><span className="text-slate-400">Gastos en efectivo</span><span className="text-red-500">−{gastosEfectivo.toFixed(0)}€</span></div>
-                      <div className="flex justify-between text-sm border-t border-emerald-200 pt-2 mt-2"><span className="font-semibold text-slate-700">Caja efectivo neta</span><span className={`font-bold text-lg ${cajaEfectivo >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{cajaEfectivo.toFixed(0)}€</span></div>
-                    </div>
-                    {/* Caja banco */}
-                    <div className="bg-blue-50 rounded-xl p-3">
-                      <div className="flex justify-between text-sm mb-1"><span className="text-slate-600 font-medium">🏦 Banco cobrado</span><span className="font-bold text-blue-600">{bancoCobrado.toFixed(0)}€</span></div>
-                      {Object.entries(bancoDesglose).sort((a, b) => b[1] - a[1]).map(([m, v]) => (
-                        <div key={m} className="flex justify-between text-[11px] text-slate-400 pl-3"><span>↳ {m}</span><span>{v.toFixed(0)}€</span></div>
-                      ))}
-                      <div className="flex justify-between text-xs mt-1"><span className="text-slate-400">Gastos desde banco</span><span className="text-red-500">−{gastosBanco.toFixed(0)}€</span></div>
-                      <div className="flex justify-between text-sm border-t border-blue-200 pt-2 mt-2"><span className="font-semibold text-slate-700">Caja banco neta</span><span className={`font-bold text-lg ${cajaBanco >= 0 ? 'text-blue-600' : 'text-red-500'}`}>{cajaBanco.toFixed(0)}€</span></div>
-                    </div>
-                    {/* Total en caja */}
+                    {CAJAS_INFO.map(c => {
+                      const neto = ingresos[c.id] - gastos[c.id];
+                      return (
+                        <div key={c.id} className={`${c.bg} rounded-xl p-3`}>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-slate-600 font-medium">{c.icon} {c.label}</span>
+                            <span className={`font-bold ${c.color}`}>{ingresos[c.id].toFixed(0)}€</span>
+                          </div>
+                          <div className="flex justify-between text-xs">
+                            <span className="text-slate-400">Gastos</span>
+                            <span className="text-red-500">−{gastos[c.id].toFixed(0)}€</span>
+                          </div>
+                          <div className={`flex justify-between text-sm border-t ${c.border} pt-2 mt-2`}>
+                            <span className="font-semibold text-slate-700">Neto</span>
+                            <span className={`font-bold text-lg ${neto >= 0 ? c.color : 'text-red-500'}`}>
+                              {neto.toFixed(0)}€
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
                     <div className="flex justify-between text-sm p-3 bg-slate-900 rounded-xl">
-                      <span className="font-semibold text-white">Total en caja</span>
-                      <span className="font-bold text-lg text-white">{disponible.toFixed(0)}€</span>
+                      <span className="font-semibold text-white">Total disponible</span>
+                      <span className="font-bold text-lg text-white">{total.toFixed(0)}€</span>
                     </div>
-                    {/* Deuda con el propietario de Sagrada Família */}
-                    {deudaTotal > 0 && (
-                      <div className="bg-purple-50 rounded-xl p-3 border border-purple-100">
-                        <div className="flex justify-between text-sm mb-1">
-                          <span className="text-slate-600 font-medium">🏠 Pendiente liquidar a Sagrada Família</span>
-                          <span className="font-bold text-purple-600">−{deudaTotal.toFixed(0)}€</span>
-                        </div>
-                        <p className="text-[10px] text-slate-400 mb-2">Dinero cobrado por nosotros que le corresponde al propietario</p>
-                        <div className="flex justify-between text-sm border-t border-purple-200 pt-2">
-                          <span className="font-semibold text-slate-700">Realmente nuestro</span>
-                          <span className={`font-bold text-lg ${(disponible - deudaTotal) >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                            {(disponible - deudaTotal).toFixed(0)}€
-                          </span>
-                        </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Comisiones de Sagrada Família */}
+            <div className="bg-white rounded-2xl border border-slate-100 p-4">
+              <h3 className="font-semibold text-slate-900 text-sm mb-4">🏠 Sagrada Família — Comisiones</h3>
+              {(() => {
+                const gestionadas = reservations.filter(r => isManaged(r.room_id));
+                const pendiente = gestionadas.reduce((a, r) => a + comisionPendiente(r), 0);
+                const cobrado = gestionadas
+                  .filter(r => r.settled_at)
+                  .reduce((a, r) => a + (Number(r.commission_amount) || 0), 0);
+                const nPend = gestionadas.filter(r => !r.settled_at).length;
+
+                return (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="bg-emerald-50 rounded-xl p-3">
+                        <p className="text-[10px] text-slate-400 mb-0.5">Ya cobrado</p>
+                        <p className="text-lg font-bold text-emerald-600">{cobrado.toFixed(0)}€</p>
                       </div>
+                      <div className="bg-purple-50 rounded-xl p-3">
+                        <p className="text-[10px] text-slate-400 mb-0.5">Nos debe</p>
+                        <p className="text-lg font-bold text-purple-600">{pendiente.toFixed(0)}€</p>
+                      </div>
+                    </div>
+
+                    {nPend > 0 && (
+                      <>
+                        <div className="space-y-1">
+                          {gestionadas.filter(r => !r.settled_at).map(r => (
+                            <div key={r.id} className="flex justify-between items-center text-xs px-1">
+                              <span className="text-slate-500">{r.guest_name}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-slate-700">
+                                  {(Number(r.commission_amount) || 0).toFixed(0)}€
+                                </span>
+                                <button
+                                  onClick={() => { setSettleTargetId(r.id); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
+                                  className="text-[10px] px-2 py-0.5 rounded-full border border-purple-200 text-purple-700 hover:bg-purple-50 transition-colors">
+                                  Liquidar
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => { setSettleTargetId(null); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
+                          className="w-full py-3 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-xl text-sm font-semibold transition-colors">
+                          Registrar cobro de {pendiente.toFixed(0)}€
+                        </button>
+                      </>
+                    )}
+                    {nPend === 0 && (
+                      <p className="text-xs text-slate-400 text-center py-2">Todas las comisiones están cobradas</p>
                     )}
                   </div>
                 );
@@ -976,30 +1084,42 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* CUADRE SEMANAL */}
+        {/* CUADRE */}
         {activeTab === 'cuadre' && (() => {
-          // Agrupar por semana (lunes-domingo) según check_in para ingresos y date para gastos
-          type Week = { monday: string; efectivoIn: number; bancoIn: number; efectivoOut: number; bancoOut: number };
+          type Week = { monday: string; in: Record<Caja, number>; out: Record<Caja, number> };
           const weeks: Record<string, Week> = {};
           function ensureWeek(monday: string): Week {
-            if (!weeks[monday]) weeks[monday] = { monday, efectivoIn: 0, bancoIn: 0, efectivoOut: 0, bancoOut: 0 };
+            if (!weeks[monday]) weeks[monday] = {
+              monday,
+              in: { born: 0, sagrera: 0, bbva: 0 },
+              out: { born: 0, sagrera: 0, bbva: 0 },
+            };
             return weeks[monday];
           }
-          // Ingresos: solo lo que REALMENTE entra a nuestra caja (pagosACaja filtra el dinero ajeno)
+
           reservations.forEach(r => {
+            if (isManaged(r.room_id)) {
+              // La comisión se imputa a la semana en que se liquidó, no al check-in.
+              if (!r.settled_at) return;
+              const wk = ensureWeek(mondayOf(r.settled_at));
+              const amt = Number(r.commission_amount) || 0;
+              if (amt > 0) wk.in[cajaDeComision(r.settled_method)] += amt;
+              return;
+            }
             if (!r.check_in) return;
             const wk = ensureWeek(mondayOf(r.check_in));
             pagosACaja(r).forEach(p => {
               if (p.amt <= 0) return;
-              if (cajaOf(p.method) === 'efectivo') wk.efectivoIn += p.amt; else wk.bancoIn += p.amt;
+              wk.in[cajaDeReserva(r.room_id, p.method)] += p.amt;
             });
           });
-          // Gastos: imputados a la semana de su fecha
+
           expenses.forEach(e => {
             if (!e.date) return;
             const wk = ensureWeek(mondayOf(e.date));
-            if (cajaOf(e.payment_method) === 'efectivo') wk.efectivoOut += e.amount; else wk.bancoOut += e.amount;
+            wk.out[cajaDeGasto(e.property_id, e.payment_method)] += e.amount;
           });
+
           const orderedWeeks = Object.values(weeks).sort((a, b) => b.monday.localeCompare(a.monday));
 
           if (orderedWeeks.length === 0) return (
@@ -1013,12 +1133,10 @@ export function AdminPanel() {
             <div className="space-y-4">
               <div className="bg-white rounded-2xl border border-slate-100 p-4">
                 <h3 className="font-semibold text-slate-900 text-sm mb-1">Cuadre de caja semanal</h3>
-                <p className="text-[11px] text-slate-400">Semanas de lunes a domingo. Ingresos por fecha de check-in; gastos por su fecha.</p>
+                <p className="text-[11px] text-slate-400">Lunes a domingo. Ingresos por fecha de check-in; gastos por su fecha. Las comisiones de Sagrada se imputan a la fecha de liquidación.</p>
               </div>
               {orderedWeeks.map(wk => {
-                const efNeto = wk.efectivoIn - wk.efectivoOut;
-                const bkNeto = wk.bancoIn - wk.bancoOut;
-                const total = efNeto + bkNeto;
+                const total = CAJAS_INFO.reduce((a, c) => a + wk.in[c.id] - wk.out[c.id], 0);
                 const isCurrent = mondayOf(today) === wk.monday;
                 return (
                   <div key={wk.monday} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
@@ -1029,21 +1147,30 @@ export function AdminPanel() {
                       </div>
                       <span className={`text-sm font-bold ${total >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{total.toFixed(0)}€</span>
                     </div>
-                    <div className="p-4 grid grid-cols-2 gap-3">
-                      {/* Efectivo */}
-                      <div className="bg-emerald-50 rounded-xl p-3">
-                        <p className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide mb-2">💵 Efectivo</p>
-                        <div className="flex justify-between text-xs mb-0.5"><span className="text-slate-500">Cobrado</span><span className="font-medium text-slate-700">{wk.efectivoIn.toFixed(0)}€</span></div>
-                        <div className="flex justify-between text-xs"><span className="text-slate-500">Gastos</span><span className="text-red-500">−{wk.efectivoOut.toFixed(0)}€</span></div>
-                        <div className="flex justify-between text-sm border-t border-emerald-200 pt-1.5 mt-1.5"><span className="font-semibold text-slate-700">Neto</span><span className={`font-bold ${efNeto >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{efNeto.toFixed(0)}€</span></div>
-                      </div>
-                      {/* Banco */}
-                      <div className="bg-blue-50 rounded-xl p-3">
-                        <p className="text-[10px] font-semibold text-blue-700 uppercase tracking-wide mb-2">🏦 Banco</p>
-                        <div className="flex justify-between text-xs mb-0.5"><span className="text-slate-500">Cobrado</span><span className="font-medium text-slate-700">{wk.bancoIn.toFixed(0)}€</span></div>
-                        <div className="flex justify-between text-xs"><span className="text-slate-500">Gastos</span><span className="text-red-500">−{wk.bancoOut.toFixed(0)}€</span></div>
-                        <div className="flex justify-between text-sm border-t border-blue-200 pt-1.5 mt-1.5"><span className="font-semibold text-slate-700">Neto</span><span className={`font-bold ${bkNeto >= 0 ? 'text-blue-600' : 'text-red-500'}`}>{bkNeto.toFixed(0)}€</span></div>
-                      </div>
+                    <div className="p-4 space-y-2">
+                      {CAJAS_INFO.map(c => {
+                        const neto = wk.in[c.id] - wk.out[c.id];
+                        if (wk.in[c.id] === 0 && wk.out[c.id] === 0) return null;
+                        return (
+                          <div key={c.id} className={`${c.bg} rounded-xl p-3`}>
+                            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wide mb-2">
+                              {c.icon} {c.label}
+                            </p>
+                            <div className="flex justify-between text-xs mb-0.5">
+                              <span className="text-slate-500">Cobrado</span>
+                              <span className="font-medium text-slate-700">{wk.in[c.id].toFixed(0)}€</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-slate-500">Gastos</span>
+                              <span className="text-red-500">−{wk.out[c.id].toFixed(0)}€</span>
+                            </div>
+                            <div className={`flex justify-between text-sm border-t ${c.border} pt-1.5 mt-1.5`}>
+                              <span className="font-semibold text-slate-700">Neto</span>
+                              <span className={`font-bold ${neto >= 0 ? c.color : 'text-red-500'}`}>{neto.toFixed(0)}€</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -1051,6 +1178,7 @@ export function AdminPanel() {
             </div>
           );
         })()}
+
       </div>
 
       {/* Bottom nav */}
@@ -1122,7 +1250,8 @@ export function AdminPanel() {
                     }
                   </div>
                 </div>
-                {/* Piso gestionado: desglose de comisión y liquidación */}
+
+                {/* Piso gestionado: comisión y estado de liquidación */}
                 {isManaged(selectedRes.room_id) && (
                   <div className="bg-purple-50 rounded-xl p-4 mb-4 border border-purple-100">
                     <p className="text-xs font-semibold text-slate-700 mb-2">🏠 Piso gestionado</p>
@@ -1130,20 +1259,39 @@ export function AdminPanel() {
                       <span className="text-slate-500">Nuestra comisión</span>
                       <span className="font-bold text-emerald-600">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
                     </div>
-                    <div className="flex justify-between text-sm mb-1.5">
-                      <span className="text-slate-500">Para el propietario</span>
-                      <span className="font-semibold text-purple-700">
-                        {((selectedRes.price_total || 0) - (selectedRes.commission_amount || 0)).toFixed(0)}€
-                      </span>
-                    </div>
+                    <p className="text-[10px] text-slate-500 mb-2">
+                      El propietario cobra la estancia directo. Nosotros solo facturamos la comisión.
+                    </p>
                     <div className="border-t border-purple-200 pt-2 mt-2">
-                      {selectedRes.collected_by_us ? (
-                        <div className="flex justify-between text-xs">
-                          <span className="text-slate-500">Cobramos nosotros · pendiente liquidar</span>
-                          <span className="font-bold text-[#E05A2B]">{deudaPropietario(selectedRes).toFixed(0)}€</span>
-                        </div>
+                      {selectedRes.settled_at ? (
+                        <>
+                          <div className="flex justify-between text-xs mb-2">
+                            <span className="text-emerald-700">
+                              ✓ Cobrada el {fmtDate(selectedRes.settled_at)} · {selectedRes.settled_method || 'Efectivo'}
+                            </span>
+                            <span className="font-bold text-emerald-600">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mb-2">
+                            Entró en: {cajaLabel(cajaDeComision(selectedRes.settled_method))}
+                          </p>
+                          <button
+                            onClick={() => handleUnsettle(selectedRes.id)}
+                            className="w-full py-2 rounded-xl text-[11px] font-medium border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 transition-colors">
+                            Deshacer cobro
+                          </button>
+                        </>
                       ) : (
-                        <p className="text-[10px] text-slate-500">El propietario cobra directo. Solo recibimos la comisión.</p>
+                        <>
+                          <div className="flex justify-between text-xs mb-2">
+                            <span className="text-slate-500">Pendiente de cobro</span>
+                            <span className="font-bold text-[#E05A2B]">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
+                          </div>
+                          <button
+                            onClick={() => { setSettleTargetId(selectedRes.id); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
+                            className="w-full py-2.5 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-xl text-xs font-semibold transition-colors">
+                            Liquidar comisión
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -1347,12 +1495,13 @@ export function AdminPanel() {
                     </div>
                   </div>
                 )}
+
                 {/* Comisión de gestión — solo pisos que administramos para terceros */}
                 {isManaged(Number(form.room_id)) && (
                   <div className="bg-purple-50 rounded-xl p-4 border border-purple-100">
                     <p className="text-xs font-semibold text-slate-700 mb-1">🏠 Piso gestionado — Comisión</p>
                     <p className="text-[10px] text-slate-500 mb-3">
-                      Este piso no es nuestro. Solo la comisión entra en nuestro cuadre.
+                      Este piso no es nuestro. Solo la comisión entra en nuestro cuadre, y únicamente al liquidarla.
                     </p>
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
@@ -1455,7 +1604,9 @@ export function AdminPanel() {
                       </button>
                     ))}
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-1.5">{cajaOf(expenseForm.payment_method) === 'efectivo' ? 'Se descuenta de la caja de efectivo' : 'Se descuenta de la cuenta bancaria'}</p>
+                  <p className="text-[10px] text-slate-400 mt-1.5">
+                    Se descuenta de: {cajaLabel(cajaDeGasto(expenseForm.property_id, expenseForm.payment_method))}
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -1490,30 +1641,85 @@ export function AdminPanel() {
               <h3 className="font-semibold text-slate-900 mb-4">💵 Registrar pago al ingreso</h3>
               <div className="space-y-4">
                 <div>
-                  <label className="text-xs font-medium text-slate-600 mb-1 block">Importe cobrado (€)</label>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€)</label>
                   <input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)}
-                    className="w-full border border-slate-200 rounded-xl px-4 py-3 text-lg font-bold focus:outline-none focus:border-emerald-500 text-slate-900" />
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-emerald-500"
+                    placeholder="0" autoFocus />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Método</label>
                   <div className="flex flex-wrap gap-2">
                     {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
                       <button key={m} type="button" onClick={() => setPayMethod(m)}
-                        className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${payMethod === m ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${
+                          payMethod === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200'
+                        }`}>
                         {m}
                       </button>
                     ))}
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-1.5">{cajaOf(payMethod) === 'efectivo' ? 'Entra a la caja de efectivo' : 'Entra a la cuenta bancaria'}</p>
                 </div>
                 <div className="flex gap-3">
                   <button onClick={() => setShowPayModal(false)} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
-                  <button onClick={handleQuickPay} className="flex-1 py-3 bg-emerald-500 text-white rounded-xl text-sm font-semibold">Confirmar cobro</button>
+                  <button onClick={handleQuickPay} className="flex-1 py-3 bg-emerald-500 text-white rounded-xl text-sm font-semibold">Confirmar</button>
                 </div>
               </div>
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* Modal liquidar comisiones Sagrada */}
+      <AnimatePresence>
+        {showSettleModal && (() => {
+          const target = settleTargetId ? reservations.find(r => r.id === settleTargetId) : null;
+          const importe = target
+            ? (Number(target.commission_amount) || 0)
+            : reservations.reduce((a, r) => a + comisionPendiente(r), 0);
+          return (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center"
+              onClick={e => { if (e.target === e.currentTarget) { setShowSettleModal(false); setSettleTargetId(null); } }}>
+              <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
+                className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6"
+                onClick={e => e.stopPropagation()}>
+                <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
+                <h3 className="font-semibold text-slate-900 mb-1">🏠 Cobro de comisiones</h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  Sagrada Família{target ? ` · ${target.guest_name}` : ' · todas las pendientes'}
+                </p>
+                <div className="space-y-4">
+                  <div className="bg-purple-50 rounded-xl p-3">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-600">Total a cobrar</span>
+                      <span className="font-bold text-purple-600">{importe.toFixed(0)}€</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-2 block">¿Dónde entra el dinero?</label>
+                    <div className="flex gap-2">
+                      {(['Efectivo', 'BBVA'] as const).map(m => (
+                        <button key={m} type="button" onClick={() => setSettleMethod(m)}
+                          className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-medium border transition-colors ${
+                            settleMethod === m ? 'bg-[#8B5CF6] text-white border-[#8B5CF6]' : 'bg-white text-slate-500 border-slate-200'
+                          }`}>
+                          {m === 'Efectivo' ? '💵 Efectivo' : '🏦 BBVA'}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5">
+                      Entra en: {cajaLabel(cajaDeComision(settleMethod))}
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => { setShowSettleModal(false); setSettleTargetId(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
+                    <button onClick={handleSettleCommissions} className="flex-1 py-3 bg-[#8B5CF6] text-white rounded-xl text-sm font-semibold">Confirmar cobro</button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
     </div>
   );

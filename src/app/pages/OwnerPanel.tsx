@@ -15,6 +15,7 @@ interface OwnerReservation {
   price_total: number;
   commission_amount: number;
   owner_income: number;
+  settled_at?: string | null;
   channel?: string;
 }
 
@@ -100,6 +101,7 @@ export function OwnerPanel() {
         owner_income: Number(r.owner_income) || 0,
         num_persons: Number(r.num_persons) || 1,
         nights: Number(r.nights) || 0,
+        settled_at: r.settled_at ? r.settled_at.split('T')[0] : null,
       })));
     } catch {} finally { setLoading(false); }
   }
@@ -146,7 +148,8 @@ export function OwnerPanel() {
 
   const totalBruto = monthRes.reduce((a, r) => a + r.price_total, 0);
   const totalComision = monthRes.reduce((a, r) => a + r.commission_amount, 0);
-  const totalNeto = monthRes.reduce((a, r) => a + r.owner_income, 0);
+  const comisionPagada = monthRes.filter(r => r.settled_at).reduce((a, r) => a + r.commission_amount, 0);
+  const comisionPendiente = totalComision - comisionPagada;
 
   return (
     <div className="min-h-screen bg-slate-50 pb-10">
@@ -299,20 +302,24 @@ export function OwnerPanel() {
           </div>
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Ingresos brutos</span>
+              <span className="text-slate-500">Ingresos brutos de tus reservas</span>
               <span className="font-semibold text-slate-900">{totalBruto.toFixed(0)}€</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Comisión de gestión</span>
-              <span className="font-semibold text-[#E05A2B]">−{totalComision.toFixed(0)}€</span>
+              <span className="text-slate-500">Comisión total del mes</span>
+              <span className="font-semibold text-slate-700">{totalComision.toFixed(0)}€</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-500">Ya pagada</span>
+              <span className="font-semibold text-emerald-600">{comisionPagada.toFixed(0)}€</span>
             </div>
             <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-3">
-              <span className="font-semibold text-slate-700">Total a recibir</span>
-              <span className="font-bold text-2xl text-emerald-600">{totalNeto.toFixed(0)}€</span>
+              <span className="font-semibold text-slate-700">Comisión de gestión que debes</span>
+              <span className="font-bold text-2xl text-[#E05A2B]">{comisionPendiente.toFixed(0)}€</span>
             </div>
           </div>
           <p className="text-[10px] text-slate-400 mt-3">
-            {monthRes.length} {monthRes.length === 1 ? 'reserva' : 'reservas'} · Comisión de gestión según acuerdo
+            {monthRes.length} {monthRes.length === 1 ? 'reserva' : 'reservas'} · Cobras la estancia directamente; la comisión de gestión se liquida a fin de mes.
           </p>
         </div>
 
@@ -343,6 +350,9 @@ export function OwnerPanel() {
                       {r.guest_nationality}
                     </span>
                   )}
+                  {r.settled_at
+                    ? <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">✓ Comisión pagada</span>
+                    : <span className="text-[10px] bg-orange-100 text-[#E05A2B] px-2 py-0.5 rounded-full font-medium">Comisión pendiente</span>}
                 </div>
                 <div className="flex items-center gap-3 text-xs text-slate-500 mb-3">
                   <span className="flex items-center gap-1">
@@ -358,17 +368,18 @@ export function OwnerPanel() {
 
                 <div className="bg-slate-50 rounded-xl p-3 space-y-1.5">
                   <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Precio estancia</span>
+                    <span className="text-slate-500">Precio estancia (lo cobras tú)</span>
                     <span className="font-medium text-slate-700">{r.price_total.toFixed(0)}€</span>
                   </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Comisión de gestión</span>
-                    <span className="font-medium text-[#E05A2B]">−{r.commission_amount.toFixed(0)}€</span>
-                  </div>
                   <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5 mt-1.5">
-                    <span className="font-semibold text-slate-700">Tu ingreso</span>
-                    <span className="font-bold text-emerald-600">{r.owner_income.toFixed(0)}€</span>
+                    <span className="font-semibold text-slate-700">Comisión de gestión</span>
+                    <span className={`font-bold ${r.settled_at ? 'text-emerald-600' : 'text-[#E05A2B]'}`}>
+                      {r.commission_amount.toFixed(0)}€
+                    </span>
                   </div>
+                  {r.settled_at && (
+                    <p className="text-[10px] text-slate-400">Pagada el {fmtDate(r.settled_at)}</p>
+                  )}
                 </div>
               </div>
             </div>
