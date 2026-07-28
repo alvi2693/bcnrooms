@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale } from 'lucide-react';
 
@@ -20,15 +20,16 @@ const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: 
 const CHANNELS = ['WhatsApp', 'Facebook', 'Airbnb', 'Booking', 'Instagram', 'Directo'];
 const PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Depósito bancario', 'PayPal', 'Bizum', 'Tarjeta', 'Otros'];
 const EXPENSE_CATEGORIES = ['🛋️ Mobiliario', '🔧 Mantenimiento', '🧹 Limpieza', '💡 Suministros', '🏠 Alquiler/Hipoteca', '📦 Equipamiento', '📋 Otros'];
+const PAGADORES = ['Alvaro', 'Jeffer'];
 
 // Un método se clasifica en 'Efectivo' o en 'Banco' (todo lo que entra a la cuenta bancaria).
 type Caja = 'born' | 'sagrera' | 'bbva';
 const CASH_METHODS = ['Efectivo'];
 
-const CAJAS_INFO: { id: Caja; label: string; icon: string; color: string; bg: string; border: string }[] = [
-  { id: 'born',    label: 'Caja El Born',  icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' },
-  { id: 'sagrera', label: 'Caja Sagrera',  icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-200' },
-  { id: 'bbva',    label: 'Cuenta BBVA',   icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',  border: 'border-slate-300' },
+const CAJAS_INFO: { id: Caja; label: string; short: string; icon: string; color: string; bg: string; border: string; countLabel: string }[] = [
+  { id: 'born',    label: 'Caja El Born',  short: 'Born',    icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200', countLabel: 'Efectivo contado' },
+  { id: 'sagrera', label: 'Caja Sagrera',  short: 'Sagrera', icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-200',    countLabel: 'Efectivo contado' },
+  { id: 'bbva',    label: 'Cuenta BBVA',   short: 'BBVA',    icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',  border: 'border-slate-300',   countLabel: 'Saldo real en el banco' },
 ];
 
 const ROOM_TO_PROPERTY: Record<number, string> = {
@@ -100,6 +101,7 @@ interface Expense {
   id: number; property_id: string; property_name: string;
   category: string; description: string; amount: number; date: string;
   payment_method?: string; created_at?: string;
+  paid_by?: string | null; own_money?: boolean; reimbursed_at?: string | null;
 }
 
 const emptyForm = {
@@ -114,12 +116,23 @@ const emptyForm = {
 
 const emptyExpenseForm = {
   property_id: 'sagrera', category: '🔧 Mantenimiento',
-  description: '', amount: '', date: new Date().toISOString().split('T')[0],
+  description: '', amount: '', date: localDateStr(new Date()),
   payment_method: 'Efectivo',
+  paid_by: 'Alvaro', own_money: false,
 };
 
 function addDays(date: Date, days: number): Date { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
-function toDateStr(date: Date): string { return date.toISOString().split('T')[0]; }
+
+// OJO: usamos la fecha LOCAL, no toISOString (que es UTC y en verano
+// adelanta un día a partir de las 22:00 hora española).
+function localDateStr(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+function toDateStr(date: Date): string { return localDateStr(date); }
+
 function fmtDate(str: string): string {
   if (!str) return '';
   const d = new Date(str.split('T')[0] + 'T00:00:00');
@@ -129,29 +142,8 @@ function calcNights(a: string, b: string): number {
   if (!a || !b) return 0;
   return Math.ceil((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
 }
-
-// Qué pagos de una reserva entran REALMENTE a nuestra caja.
-// - Piso propio: todo lo cobrado (deposit + checkin), cada uno con su método.
-// - Piso gestionado: solo la comisión, y únicamente cuando ya está liquidada.
-type CajaPago = { amt: number; method?: string };
-
-function pagosACaja(r: Reservation): CajaPago[] {
-  const dep = Number(r.deposit_amount) || 0;
-  const chk = Number(r.checkin_amount) || 0;
-
-  if (!isManaged(r.room_id)) {
-    return [
-      { amt: dep, method: r.deposit_method },
-      { amt: chk, method: r.checkin_method },
-    ];
-  }
-
-  // Piso gestionado (Sagrada). El dinero del huésped nunca es nuestro.
-  // Solo entra la comisión, y únicamente cuando ya está liquidada.
-  if (r.settled_at) {
-    return [{ amt: Number(r.commission_amount) || 0, method: r.settled_method || 'Efectivo' }];
-  }
-  return [];
+function onlyDate(v?: string | null): string {
+  return v ? String(v).split('T')[0] : '';
 }
 
 // La comisión liquidada entra en la caja según el método elegido al liquidar.
@@ -160,30 +152,113 @@ function cajaDeComision(method?: string | null): Caja {
   return isCash(method || undefined) ? 'sagrera' : 'bbva';
 }
 
-// Caja destino de un pago de reserva, contemplando pisos gestionados.
-function cajaDePago(r: Reservation, method?: string): Caja {
-  if (isManaged(r.room_id)) return cajaDeComision(method);
-  return cajaDeReserva(r.room_id, method);
-}
-
 // Comisión que el propietario nos debe (aún sin liquidar)
 function comisionPendiente(r: Reservation): number {
   if (!isManaged(r.room_id) || r.settled_at) return 0;
   return Number(r.commission_amount) || 0;
 }
 
-// --- Helpers de cuadre semanal (lunes-domingo) ---
-function mondayOf(dateStr: string): string {
-  const d = new Date(dateStr.split('T')[0] + 'T00:00:00');
-  const day = d.getDay(); // 0=domingo, 1=lunes...
-  const diff = day === 0 ? -6 : 1 - day; // retroceder al lunes
-  d.setDate(d.getDate() + diff);
-  return toDateStr(d);
+// ─────────────────────────────────────────────
+// MOVIMIENTOS DE CAJA
+// Cada euro que entra o sale de una caja, con su fecha real.
+// Es la única fuente de verdad para el balance y para el cuadre.
+// ─────────────────────────────────────────────
+type Movimiento = {
+  key: string;
+  date: string;
+  caja: Caja;
+  tipo: 'in' | 'out';
+  concepto: string;
+  detalle: string;
+  amount: number;
+};
+
+function construirMovimientos(reservations: Reservation[], expenses: Expense[]): Movimiento[] {
+  const movs: Movimiento[] = [];
+
+  reservations.forEach(r => {
+    // Piso gestionado: el dinero del huésped nunca es nuestro.
+    // Solo entra la comisión, y en la fecha en que se liquidó.
+    if (isManaged(r.room_id)) {
+      const amt = Number(r.commission_amount) || 0;
+      const fecha = onlyDate(r.settled_at);
+      if (!fecha || amt <= 0) return;
+      movs.push({
+        key: `com-${r.id}`, date: fecha, caja: cajaDeComision(r.settled_method), tipo: 'in',
+        concepto: r.guest_name, detalle: `Comisión Sagrada · ${r.settled_method || 'Efectivo'}`, amount: amt,
+      });
+      return;
+    }
+
+    const dep = Number(r.deposit_amount) || 0;
+    const chk = Number(r.checkin_amount) || 0;
+    // El pago de reserva se cobra al crearla; el del ingreso, el día del check-in.
+    const fechaDep = onlyDate(r.created_at) || r.check_in;
+    if (dep > 0) movs.push({
+      key: `dep-${r.id}`, date: fechaDep, caja: cajaDeReserva(r.room_id, r.deposit_method), tipo: 'in',
+      concepto: r.guest_name, detalle: `Pago de reserva · ${r.deposit_method || '—'}`, amount: dep,
+    });
+    if (chk > 0) movs.push({
+      key: `chk-${r.id}`, date: r.check_in, caja: cajaDeReserva(r.room_id, r.checkin_method), tipo: 'in',
+      concepto: r.guest_name, detalle: `Pago al ingresar · ${r.checkin_method || '—'}`, amount: chk,
+    });
+  });
+
+  expenses.forEach(e => {
+    const caja = cajaDeGasto(e.property_id, e.payment_method);
+    const quien = e.paid_by ? ` · ${e.paid_by}` : '';
+    if (e.own_money) {
+      // Lo adelantó alguien de su bolsillo: la caja no se toca hasta devolvérselo.
+      const fecha = onlyDate(e.reimbursed_at);
+      if (!fecha) return;
+      movs.push({
+        key: `reemb-${e.id}`, date: fecha, caja, tipo: 'out',
+        concepto: `Devolución a ${e.paid_by || 'colaborador'}`, detalle: `${e.description} · ${e.category}`, amount: e.amount,
+      });
+      return;
+    }
+    movs.push({
+      key: `gas-${e.id}`, date: e.date, caja, tipo: 'out',
+      concepto: e.description, detalle: `${e.category} · ${e.payment_method || '—'}${quien}`, amount: e.amount,
+    });
+  });
+
+  return movs.sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key));
 }
-function fmtWeekLabel(mondayStr: string): string {
-  const mon = new Date(mondayStr + 'T00:00:00');
-  const sun = addDays(mon, 6);
-  return `${mon.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} — ${sun.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}`;
+
+const CAJAS_CERO = (): Record<Caja, number> => ({ born: 0, sagrera: 0, bbva: 0 });
+
+function acumular(movs: Movimiento[]): Record<Caja, number> {
+  const acc = CAJAS_CERO();
+  movs.forEach(m => { acc[m.caja] += m.tipo === 'in' ? m.amount : -m.amount; });
+  return acc;
+}
+
+// ── Helpers de mes ──
+function mesDe(dateStr: string): string { return dateStr.slice(0, 7); }
+function mesActualStr(): string { return localDateStr(new Date()).slice(0, 7); }
+function sumarMeses(ym: string, delta: number): string {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+function fmtMes(ym: string): string {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+}
+
+// VAPID viene en base64url; pushManager.subscribe necesita bytes, no string.
+// Este era el motivo por el que la suscripción nunca llegaba a guardarse.
+function urlBase64ToUint8Array(base64String: string): BufferSource {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  // Reservamos el ArrayBuffer explícitamente: TypeScript 5.7+ rechaza
+  // un Uint8Array genérico donde se espera un BufferSource.
+  const buffer = new ArrayBuffer(raw.length);
+  const output = new Uint8Array(buffer);
+  for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
+  return output;
 }
 
 function NationalitySearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -234,7 +309,6 @@ export function AdminPanel() {
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
   const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'expenses' | 'stats' | 'cuadre'>('today');
-  const [calendarStart, setCalendarStart] = useState<Date>(() => new Date());
   const [showPayModal, setShowPayModal] = useState(false);
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('Efectivo');
@@ -244,15 +318,60 @@ export function AdminPanel() {
   const [settleMethod, setSettleMethod] = useState<'Efectivo' | 'BBVA'>('Efectivo');
   const [settleTargetId, setSettleTargetId] = useState<number | null>(null);
 
-  const DAYS_VISIBLE = 14;
+  // Cuadre mensual
+  const [cuadreMes, setCuadreMes] = useState<string>(() => mesActualStr());
+  const [conteos, setConteos] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('bcn_conteos') || '{}'); } catch { return {}; }
+  });
+  function setConteo(key: string, val: string) {
+    setConteos(prev => {
+      const next = { ...prev, [key]: val };
+      try { localStorage.setItem('bcn_conteos', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
   const COL_W = 52;
   const ROW_H = 52;
   const LABEL_W = 140;
+  const DIAS_ATRAS = 21;
+  const DIAS_ADELANTE = 200;
   const today = toDateStr(new Date());
   const isLoggedIn = !!token;
 
-  const days: Date[] = [];
-  for (let i = 0; i < DAYS_VISIBLE; i++) days.push(addDays(calendarStart, i));
+  // Rango largo y fijo: el calendario se navega scrolleando, sin flechas.
+  const days: Date[] = useMemo(() => {
+    const origen = addDays(new Date(), -DIAS_ATRAS);
+    const arr: Date[] = [];
+    for (let i = 0; i < DIAS_ATRAS + DIAS_ADELANTE; i++) arr.push(addDays(origen, i));
+    return arr;
+  }, [today]);
+
+  const calScrollRef = useRef<HTMLDivElement>(null);
+  const [calMesVisible, setCalMesVisible] = useState('');
+
+  function scrollHastaHoy(smooth = true) {
+    const el = calScrollRef.current;
+    if (!el) return;
+    const idx = days.findIndex(d => toDateStr(d) === today);
+    if (idx < 0) return;
+    el.scrollTo({ left: Math.max(0, idx * COL_W - COL_W * 2), behavior: smooth ? 'smooth' : 'auto' });
+  }
+
+  // Al abrir el calendario: colocarse en hoy y seguir el mes que se está viendo.
+  useEffect(() => {
+    if (activeTab !== 'calendar') return;
+    const el = calScrollRef.current;
+    if (!el) return;
+    const actualizarMes = () => {
+      const idx = Math.min(days.length - 1, Math.max(0, Math.round(el.scrollLeft / COL_W)));
+      setCalMesVisible(days[idx].toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
+    };
+    scrollHastaHoy(false);
+    actualizarMes();
+    el.addEventListener('scroll', actualizarMes, { passive: true });
+    return () => el.removeEventListener('scroll', actualizarMes);
+  }, [activeTab, days]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -285,6 +404,7 @@ export function AdminPanel() {
         collected_by_us: !!r.collected_by_us,
         settled_at: r.settled_at ? r.settled_at.split('T')[0] : null,
         settled_method: r.settled_method || null,
+        created_at: r.created_at || undefined,
         num_persons: Number(r.num_persons),
       })));
     } catch {}
@@ -294,12 +414,21 @@ export function AdminPanel() {
     try {
       const res = await fetch(`${BACKEND_URL}/admin/expenses`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
-      setExpenses(data.map((e: any) => ({ ...e, amount: Number(e.amount), date: e.date?.split('T')[0] || e.date })));
+      setExpenses(data.map((e: any) => ({
+        ...e,
+        amount: Number(e.amount),
+        date: e.date?.split('T')[0] || e.date,
+        paid_by: e.paid_by || null,
+        own_money: !!e.own_money,
+        reimbursed_at: e.reimbursed_at ? String(e.reimbursed_at).split('T')[0] : null,
+      })));
     } catch {}
   }
 
   useEffect(() => { if (isLoggedIn) { fetchReservations(); fetchExpenses(); } }, [isLoggedIn]);
   useEffect(() => { if (isLoggedIn && 'Notification' in window) setPushEnabled(Notification.permission === 'granted'); }, [isLoggedIn]);
+
+  const movimientos = useMemo(() => construirMovimientos(reservations, expenses), [reservations, expenses]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setFormError('');
@@ -366,8 +495,19 @@ export function AdminPanel() {
   }
 
   function handleExpenseEdit(ex: Expense) {
-    setExpenseForm({ property_id: ex.property_id, category: ex.category, description: ex.description, amount: ex.amount.toString(), date: ex.date, payment_method: ex.payment_method || 'Efectivo' });
+    setExpenseForm({
+      property_id: ex.property_id, category: ex.category, description: ex.description,
+      amount: ex.amount.toString(), date: ex.date, payment_method: ex.payment_method || 'Efectivo',
+      paid_by: ex.paid_by || 'Alvaro', own_money: !!ex.own_money,
+    });
     setEditingExpenseId(ex.id); setShowExpenseForm(true);
+  }
+
+  async function handleReembolso(id: number, deshacer = false) {
+    await fetch(`${BACKEND_URL}/admin/expenses/${id}/${deshacer ? 'unreimburse' : 'reimburse'}`, {
+      method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+    });
+    fetchExpenses();
   }
 
   function handlePPN(val: string) {
@@ -391,10 +531,7 @@ export function AdminPanel() {
   }
 
   // Posición de la barra en píxeles, usando medios días (check-in entra a mediodía, check-out sale a mediodía).
-  // El diente diagonal SOLO se aplica cuando hay otra reserva de la misma habitación que encaja ese día:
-  // - clipStart: alguien hizo check-out el día que esta reserva hace check-in
-  // - clipEnd: alguien hace check-in el día que esta reserva hace check-out
-  // Si la habitación queda libre, la barra termina recta.
+  // El diente diagonal SOLO se aplica cuando hay otra reserva de la misma habitación que encaja ese día.
   // Devuelve null si la reserva no intersecta el rango visible.
   function getResBar(res: Reservation): { left: number; width: number; clipStart: boolean; clipEnd: boolean } | null {
     const firstDay = toDateStr(days[0]);
@@ -406,7 +543,6 @@ export function AdminPanel() {
     const ciIdx = idxOf(res.check_in);
     const coIdx = idxOf(res.check_out);
 
-    // ¿Hay solape con vecinas en la misma habitación?
     const salienteEnMiEntrada = reservations.some(
       o => o.id !== res.id && o.room_id === res.room_id && o.check_out === res.check_in
     );
@@ -414,16 +550,13 @@ export function AdminPanel() {
       o => o.id !== res.id && o.room_id === res.room_id && o.check_in === res.check_out
     );
 
-    // Si nadie sale el día que entro, arranco en el borde izquierdo de la celda (no a mitad).
     const startPx = ciIdx >= 0
       ? (ciIdx + (salienteEnMiEntrada ? 0.5 : 0)) * COL_W
       : 0;
-    // Si nadie entra el día que salgo, ocupo la celda completa del check-out.
     const endPx = coIdx >= 0
       ? (coIdx + (entranteEnMiSalida ? 0.5 : 1)) * COL_W
-      : DAYS_VISIBLE * COL_W;
+      : days.length * COL_W;
 
-    // El diente solo se dibuja si el extremo es visible Y hay vecina que encaje.
     const clipStart = ciIdx >= 0 && salienteEnMiEntrada;
     const clipEnd = coIdx >= 0 && entranteEnMiSalida;
 
@@ -473,17 +606,49 @@ export function AdminPanel() {
   }
 
   async function enablePush() {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) { alert('Tu navegador no soporta notificaciones push'); return; }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      alert('Este navegador no admite notificaciones push. En iPhone hay que instalar la app desde Safari, con "Añadir a pantalla de inicio".');
+      return;
+    }
     try {
       const permission = await Notification.requestPermission();
-      if (permission !== 'granted') { alert('Permiso denegado'); return; }
+      if (permission !== 'granted') { alert('Permiso denegado. Actívalo en los ajustes del navegador.'); return; }
+
       const reg = await navigator.serviceWorker.ready;
       const keyRes = await fetch(`${BACKEND_URL}/push/vapid-key`);
       const { publicKey } = await keyRes.json();
-      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
-      await fetch(`${BACKEND_URL}/push/subscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(sub) });
-      setPushEnabled(true); alert('✅ Notificaciones activadas');
-    } catch { alert('Error activando notificaciones'); }
+      if (!publicKey) throw new Error('El servidor no devolvió la clave VAPID');
+
+      // Si ya había una suscripción con otra clave, la renovamos.
+      const previa = await reg.pushManager.getSubscription();
+      if (previa) await previa.unsubscribe().catch(() => {});
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+
+      // El backend espera { endpoint, keys: { p256dh, auth } }.
+      const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+        throw new Error('El navegador devolvió una suscripción incompleta');
+      }
+
+      const res = await fetch(`${BACKEND_URL}/push/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ endpoint: json.endpoint, keys: { p256dh: json.keys.p256dh, auth: json.keys.auth } }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `El servidor respondió ${res.status}`);
+      }
+
+      setPushEnabled(true);
+      alert('Notificaciones activadas');
+    } catch (err: any) {
+      alert(`No se pudieron activar las notificaciones: ${err?.message || err}`);
+    }
   }
 
   const totalPending = reservations.reduce((a, r) => a + ((r.price_total || 0) - (r.price_paid || 0)), 0);
@@ -707,20 +872,29 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* CALENDAR */}
+        {/* CALENDAR — scroll horizontal libre, columna de habitaciones fija */}
         {activeTab === 'calendar' && (
           <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
             <div className="flex items-center justify-between px-3 py-3 border-b border-slate-100">
-              <button onClick={() => setCalendarStart(addDays(calendarStart, -14))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronLeft className="w-4 h-4" /></button>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setCalendarStart(new Date())} className="text-xs px-2 py-1 bg-[#E05A2B] text-white rounded-lg font-medium">Hoy</button>
-                <span className="text-xs font-semibold text-slate-700">{fmtDate(toDateStr(days[0]))} — {fmtDate(toDateStr(days[days.length-1]))}</span>
+              <div className="min-w-0">
+                <span className="text-sm font-semibold text-slate-800 capitalize">{calMesVisible || '—'}</span>
+                <p className="text-[10px] text-slate-400">Desliza a los lados para moverte por las fechas</p>
               </div>
-              <button onClick={() => setCalendarStart(addDays(calendarStart, 14))} className="p-1.5 hover:bg-slate-100 rounded-lg"><ChevronRight className="w-4 h-4" /></button>
+              <button onClick={() => scrollHastaHoy()} className="flex-shrink-0 text-xs px-3 py-1.5 bg-[#E05A2B] text-white rounded-lg font-medium">
+                Ir a hoy
+              </button>
             </div>
-            <div className="overflow-x-auto">
-              <div style={{ minWidth: LABEL_W + COL_W * DAYS_VISIBLE }}>
-                <div className="flex border-b border-slate-100" style={{ paddingLeft: LABEL_W }}>
+            <div
+              ref={calScrollRef}
+              className="overflow-x-auto overscroll-x-contain"
+              style={{ WebkitOverflowScrolling: 'touch' }}>
+              <div style={{ width: LABEL_W + COL_W * days.length }}>
+
+                {/* Cabecera de días */}
+                <div className="flex border-b border-slate-100">
+                  <div
+                    style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '2px 0 4px -2px rgba(15,23,42,0.10)' }}
+                    className="sticky left-0 z-30 bg-white border-r border-slate-100" />
                   {days.map((d, i) => {
                     const ds = toDateStr(d), isToday = ds === today, isWE = d.getDay() === 0 || d.getDay() === 6;
                     return (
@@ -732,19 +906,24 @@ export function AdminPanel() {
                     );
                   })}
                 </div>
+
                 {PROPERTIES.map(prop => (
                   <div key={prop.id}>
                     <div className="flex items-center border-b border-slate-100" style={{ background: prop.light }}>
-                      <div style={{ width: LABEL_W, minWidth: LABEL_W }} className="px-3 py-1.5">
+                      <div
+                        style={{ width: LABEL_W, minWidth: LABEL_W, background: prop.light, boxShadow: '2px 0 4px -2px rgba(15,23,42,0.10)' }}
+                        className="sticky left-0 z-30 px-3 py-1.5 border-r border-slate-100">
                         <span className="text-[10px] font-bold uppercase tracking-wide" style={{ color: prop.color }}>{prop.name}</span>
                       </div>
-                      <div className="flex-1 border-l border-slate-100" style={{ height: 24 }} />
+                      <div className="flex-1" style={{ height: 24 }} />
                     </div>
                     {prop.rooms.map(room => {
                       const visibleRes = reservations.filter(r => r.room_id === room.id && r.check_in <= toDateStr(days[days.length-1]) && r.check_out >= toDateStr(days[0]));
                       return (
                         <div key={room.id} className="flex border-b border-slate-100 relative" style={{ height: ROW_H }}>
-                          <div style={{ width: LABEL_W, minWidth: LABEL_W }} className="flex items-center px-3 border-r border-slate-100 bg-white z-10">
+                          <div
+                            style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '2px 0 4px -2px rgba(15,23,42,0.10)' }}
+                            className="sticky left-0 z-30 flex items-center px-3 border-r border-slate-100 bg-white">
                             <div>
                               <p className="text-[11px] font-medium text-slate-700">{room.name}</p>
                               <p className="text-[9px] text-slate-400">{room.type === 'double' ? 'Doble' : 'Mediana'}</p>
@@ -761,7 +940,7 @@ export function AdminPanel() {
                                       if (!hasRes) {
                                         const p = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
                                         if (p) setSelectedProperty(p.id);
-                                        setForm(f => ({ ...emptyForm, room_id: room.id, check_in: ds }));
+                                        setForm({ ...emptyForm, room_id: room.id, check_in: ds });
                                         setEditingId(null); setShowForm(true);
                                       }
                                     }}
@@ -777,7 +956,6 @@ export function AdminPanel() {
                               const pending = (res.price_total || 0) - (res.price_paid || 0);
                               const isPaid = pending <= 0 && (res.price_total || 0) > 0;
                               // El diente solo existe si hay reserva vecina ese día (lo decide getResBar).
-                              // Si no hay ninguno, no aplicamos clipPath para conservar las esquinas redondeadas.
                               const tooth = COL_W * 0.5;
                               const { clipStart, clipEnd } = bar;
                               const clipPath = (clipStart || clipEnd)
@@ -815,7 +993,9 @@ export function AdminPanel() {
         )}
 
         {/* EXPENSES */}
-        {activeTab === 'expenses' && (
+        {activeTab === 'expenses' && (() => {
+          const pendientesReembolso = expenses.filter(e => e.own_money && !e.reimbursed_at);
+          return (
           <div className="space-y-4">
             {PROPERTIES.map(prop => {
               const propIncome = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id)).reduce((a, r) => a + (r.price_paid || 0), 0);
@@ -835,6 +1015,40 @@ export function AdminPanel() {
                 </div>
               );
             })}
+
+            {/* Dinero adelantado por Alvaro o Jeffer */}
+            {pendientesReembolso.length > 0 && (
+              <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
+                <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+                  <span className="text-xs font-bold uppercase tracking-wide text-amber-700">
+                    Por devolver ({pendientesReembolso.length})
+                  </span>
+                  <p className="text-[10px] text-amber-600/80 mt-0.5">
+                    Lo pagaron de su bolsillo. Hasta que se devuelve, no sale de la caja.
+                  </p>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {pendientesReembolso.map(ex => (
+                    <div key={ex.id} className="flex items-center gap-3 p-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
+                        <p className="text-[10px] text-slate-400">{ex.paid_by || 'Sin asignar'} · {ex.category} · {fmtDate(ex.date)}</p>
+                      </div>
+                      <span className="text-sm font-bold text-amber-600 flex-shrink-0">{ex.amount}€</span>
+                      <button onClick={() => handleReembolso(ex.id)}
+                        className="flex-shrink-0 text-[11px] px-3 py-1.5 rounded-lg bg-emerald-500 text-white font-medium hover:bg-emerald-600 transition-colors">
+                        Devuelto
+                      </button>
+                    </div>
+                  ))}
+                  <div className="flex justify-between px-4 py-2.5 bg-amber-50/60">
+                    <span className="text-xs text-amber-700 font-medium">Total por devolver</span>
+                    <span className="text-xs font-bold text-amber-700">{pendientesReembolso.reduce((a, e) => a + e.amount, 0)}€</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <button onClick={() => { setExpenseForm(emptyExpenseForm); setEditingExpenseId(null); setShowExpenseForm(true); }}
               className="w-full flex items-center justify-center gap-2 py-3 bg-white border border-dashed border-slate-300 rounded-2xl text-sm text-slate-500 hover:border-[#E05A2B] hover:text-[#E05A2B] transition-colors">
               <Plus className="w-4 h-4" /> Añadir gasto
@@ -862,6 +1076,14 @@ export function AdminPanel() {
                                   {ex.payment_method} · {info.icon} {info.label}
                                 </span>
                               )}
+                              {ex.paid_by && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{ex.paid_by}</span>
+                              )}
+                              {ex.own_money && (
+                                ex.reimbursed_at
+                                  ? <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Devuelto {fmtDate(ex.reimbursed_at)}</span>
+                                  : <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Por devolver</span>
+                              )}
                             </div>
                             <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
                           </div>
@@ -882,7 +1104,8 @@ export function AdminPanel() {
               );
             })}
           </div>
-        )}
+          );
+        })()}
 
         {/* STATS */}
         {activeTab === 'stats' && (
@@ -954,24 +1177,17 @@ export function AdminPanel() {
               );
             })}
 
-            {/* Balance por caja */}
+            {/* Balance por caja — acumulado histórico */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
-              <h3 className="font-semibold text-slate-900 text-sm mb-4">💰 Balance por caja</h3>
+              <h3 className="font-semibold text-slate-900 text-sm mb-1">💰 Balance por caja</h3>
+              <p className="text-[11px] text-slate-400 mb-4">Acumulado desde el principio. El detalle mes a mes está en Cuadre.</p>
               {(() => {
-                const ingresos: Record<Caja, number> = { born: 0, sagrera: 0, bbva: 0 };
-                const gastos: Record<Caja, number> = { born: 0, sagrera: 0, bbva: 0 };
-
-                reservations.forEach(r => {
-                  pagosACaja(r).forEach(p => {
-                    if (p.amt <= 0) return;
-                    ingresos[cajaDePago(r, p.method)] += p.amt;
-                  });
+                const ingresos = CAJAS_CERO();
+                const gastos = CAJAS_CERO();
+                movimientos.forEach(m => {
+                  if (m.tipo === 'in') ingresos[m.caja] += m.amount;
+                  else gastos[m.caja] += m.amount;
                 });
-
-                expenses.forEach(e => {
-                  gastos[cajaDeGasto(e.property_id, e.payment_method)] += e.amount;
-                });
-
                 const total = CAJAS_INFO.reduce((a, c) => a + ingresos[c.id] - gastos[c.id], 0);
 
                 return (
@@ -1084,97 +1300,194 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* CUADRE */}
+        {/* CUADRE — balance mensual por caja, del día 01 al cierre */}
         {activeTab === 'cuadre' && (() => {
-          type Week = { monday: string; in: Record<Caja, number>; out: Record<Caja, number> };
-          const weeks: Record<string, Week> = {};
-          function ensureWeek(monday: string): Week {
-            if (!weeks[monday]) weeks[monday] = {
-              monday,
-              in: { born: 0, sagrera: 0, bbva: 0 },
-              out: { born: 0, sagrera: 0, bbva: 0 },
-            };
-            return weeks[monday];
-          }
+          const previos = movimientos.filter(m => mesDe(m.date) < cuadreMes);
+          const delMes = movimientos.filter(m => mesDe(m.date) === cuadreMes);
+          const saldoInicial = acumular(previos);
 
-          reservations.forEach(r => {
-            if (isManaged(r.room_id)) {
-              // La comisión se imputa a la semana en que se liquidó, no al check-in.
-              if (!r.settled_at) return;
-              const wk = ensureWeek(mondayOf(r.settled_at));
-              const amt = Number(r.commission_amount) || 0;
-              if (amt > 0) wk.in[cajaDeComision(r.settled_method)] += amt;
-              return;
-            }
-            if (!r.check_in) return;
-            const wk = ensureWeek(mondayOf(r.check_in));
-            pagosACaja(r).forEach(p => {
-              if (p.amt <= 0) return;
-              wk.in[cajaDeReserva(r.room_id, p.method)] += p.amt;
-            });
+          const inMes = CAJAS_CERO();
+          const outMes = CAJAS_CERO();
+          delMes.forEach(m => {
+            if (m.tipo === 'in') inMes[m.caja] += m.amount;
+            else outMes[m.caja] += m.amount;
           });
 
-          expenses.forEach(e => {
-            if (!e.date) return;
-            const wk = ensureWeek(mondayOf(e.date));
-            wk.out[cajaDeGasto(e.property_id, e.payment_method)] += e.amount;
-          });
-
-          const orderedWeeks = Object.values(weeks).sort((a, b) => b.monday.localeCompare(a.monday));
-
-          if (orderedWeeks.length === 0) return (
-            <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
-              <Scale className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-              <p className="text-slate-400 text-sm">Aún no hay movimientos para cuadrar</p>
-            </div>
-          );
+          const totalIn = CAJAS_INFO.reduce((a, c) => a + inMes[c.id], 0);
+          const totalOut = CAJAS_INFO.reduce((a, c) => a + outMes[c.id], 0);
+          const pendientesReembolso = expenses.filter(e => e.own_money && !e.reimbursed_at);
+          const esMesActual = cuadreMes === mesActualStr();
 
           return (
             <div className="space-y-4">
-              <div className="bg-white rounded-2xl border border-slate-100 p-4">
-                <h3 className="font-semibold text-slate-900 text-sm mb-1">Cuadre de caja semanal</h3>
-                <p className="text-[11px] text-slate-400">Lunes a domingo. Ingresos por fecha de check-in; gastos por su fecha. Las comisiones de Sagrada se imputan a la fecha de liquidación.</p>
+
+              {/* Selector de mes */}
+              <div className="bg-white rounded-2xl border border-slate-100 flex items-center justify-between px-2 py-2">
+                <button onClick={() => setCuadreMes(m => sumarMeses(m, -1))} className="p-2 hover:bg-slate-100 rounded-xl">
+                  <ChevronLeft className="w-4 h-4 text-slate-500" />
+                </button>
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-slate-800 capitalize">{fmtMes(cuadreMes)}</p>
+                  {!esMesActual && (
+                    <button onClick={() => setCuadreMes(mesActualStr())} className="text-[10px] text-[#E05A2B] font-medium">
+                      Volver al mes actual
+                    </button>
+                  )}
+                </div>
+                <button onClick={() => setCuadreMes(m => sumarMeses(m, 1))} className="p-2 hover:bg-slate-100 rounded-xl">
+                  <ChevronRight className="w-4 h-4 text-slate-500" />
+                </button>
               </div>
-              {orderedWeeks.map(wk => {
-                const total = CAJAS_INFO.reduce((a, c) => a + wk.in[c.id] - wk.out[c.id], 0);
-                const isCurrent = mondayOf(today) === wk.monday;
+
+              {/* Resumen del mes */}
+              <div className="bg-white rounded-2xl border border-slate-100 p-4">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                    <p className="text-[10px] text-slate-400">Entró</p>
+                    <p className="text-base font-bold text-emerald-600">{totalIn.toFixed(0)}€</p>
+                  </div>
+                  <div className="bg-red-50 rounded-xl p-3 text-center">
+                    <p className="text-[10px] text-slate-400">Salió</p>
+                    <p className="text-base font-bold text-red-500">{totalOut.toFixed(0)}€</p>
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-3 text-center">
+                    <p className="text-[10px] text-slate-400">Neto</p>
+                    <p className={`text-base font-bold ${totalIn - totalOut >= 0 ? 'text-slate-900' : 'text-red-500'}`}>
+                      {(totalIn - totalOut).toFixed(0)}€
+                    </p>
+                  </div>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-3">
+                  Del 1 al último día del mes. Los pagos de reserva cuentan el día que se creó la reserva,
+                  los pagos al ingresar el día del check-in, y las comisiones de Sagrada el día que se liquidaron.
+                </p>
+              </div>
+
+              {/* Una tarjeta por caja */}
+              {CAJAS_INFO.map(c => {
+                const ingresos = delMes.filter(m => m.caja === c.id && m.tipo === 'in');
+                const gastos = delMes.filter(m => m.caja === c.id && m.tipo === 'out');
+                const neto = inMes[c.id] - outMes[c.id];
+                const teorico = saldoInicial[c.id] + neto;
+                const key = `${cuadreMes}:${c.id}`;
+                const contadoRaw = conteos[key] ?? '';
+                const contado = contadoRaw === '' ? null : Number(contadoRaw);
+                const diferencia = contado === null ? null : contado - teorico;
+
                 return (
-                  <div key={wk.monday} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-800">{fmtWeekLabel(wk.monday)}</span>
-                        {isCurrent && <span className="text-[9px] bg-[#E05A2B] text-white px-2 py-0.5 rounded-full font-medium">Esta semana</span>}
-                      </div>
-                      <span className={`text-sm font-bold ${total >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{total.toFixed(0)}€</span>
+                  <div key={c.id} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+                    <div className={`flex items-center justify-between px-4 py-3 ${c.bg} border-b ${c.border}`}>
+                      <span className="text-sm font-semibold text-slate-800">{c.icon} {c.label}</span>
+                      <span className={`text-sm font-bold ${neto >= 0 ? c.color : 'text-red-500'}`}>
+                        {neto >= 0 ? '+' : ''}{neto.toFixed(0)}€
+                      </span>
                     </div>
-                    <div className="p-4 space-y-2">
-                      {CAJAS_INFO.map(c => {
-                        const neto = wk.in[c.id] - wk.out[c.id];
-                        if (wk.in[c.id] === 0 && wk.out[c.id] === 0) return null;
-                        return (
-                          <div key={c.id} className={`${c.bg} rounded-xl p-3`}>
-                            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wide mb-2">
-                              {c.icon} {c.label}
-                            </p>
-                            <div className="flex justify-between text-xs mb-0.5">
-                              <span className="text-slate-500">Cobrado</span>
-                              <span className="font-medium text-slate-700">{wk.in[c.id].toFixed(0)}€</span>
+
+                    <div className="px-4 py-3 flex justify-between text-xs border-b border-slate-100">
+                      <span className="text-slate-500">Saldo al empezar el mes</span>
+                      <span className="font-semibold text-slate-700">{saldoInicial[c.id].toFixed(0)}€</span>
+                    </div>
+
+                    {/* Ingresos, uno por persona */}
+                    <div className="px-4 pt-3">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">
+                        Ingresos ({ingresos.length})
+                      </p>
+                      {ingresos.length === 0 && <p className="text-xs text-slate-400 pb-2">Sin ingresos este mes</p>}
+                      <div className="space-y-1.5">
+                        {ingresos.map(m => (
+                          <div key={m.key} className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 w-12 flex-shrink-0">{fmtDate(m.date)}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-slate-800 truncate">{m.concepto}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{m.detalle}</p>
                             </div>
-                            <div className="flex justify-between text-xs">
-                              <span className="text-slate-500">Gastos</span>
-                              <span className="text-red-500">−{wk.out[c.id].toFixed(0)}€</span>
-                            </div>
-                            <div className={`flex justify-between text-sm border-t ${c.border} pt-1.5 mt-1.5`}>
-                              <span className="font-semibold text-slate-700">Neto</span>
-                              <span className={`font-bold ${neto >= 0 ? c.color : 'text-red-500'}`}>{neto.toFixed(0)}€</span>
-                            </div>
+                            <span className="text-xs font-semibold text-emerald-600 flex-shrink-0">+{m.amount.toFixed(0)}€</span>
                           </div>
-                        );
-                      })}
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Gastos */}
+                    <div className="px-4 pt-3">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">
+                        Gastos ({gastos.length})
+                      </p>
+                      {gastos.length === 0 && <p className="text-xs text-slate-400 pb-2">Sin gastos este mes</p>}
+                      <div className="space-y-1.5">
+                        {gastos.map(m => (
+                          <div key={m.key} className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 w-12 flex-shrink-0">{fmtDate(m.date)}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-slate-800 truncate">{m.concepto}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{m.detalle}</p>
+                            </div>
+                            <span className="text-xs font-semibold text-red-500 flex-shrink-0">−{m.amount.toFixed(0)}€</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Cuadre */}
+                    <div className="mt-3 px-4 py-3 bg-slate-50 border-t border-slate-100 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="font-semibold text-slate-700">Debería haber</span>
+                        <span className="font-bold text-slate-900">{teorico.toFixed(0)}€</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-500 flex-1">{c.countLabel}</label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={contadoRaw}
+                            onChange={e => setConteo(key, e.target.value)}
+                            placeholder="0"
+                            className="w-24 border border-slate-200 rounded-xl px-3 py-2 text-sm text-right bg-white focus:outline-none focus:border-[#E05A2B]" />
+                          <span className="text-xs text-slate-400">€</span>
+                        </div>
+                      </div>
+                      {diferencia !== null && (
+                        <div className={`flex justify-between items-center rounded-xl px-3 py-2 ${
+                          Math.abs(diferencia) < 0.5 ? 'bg-emerald-100' : 'bg-red-100'
+                        }`}>
+                          <span className={`text-xs font-semibold ${Math.abs(diferencia) < 0.5 ? 'text-emerald-700' : 'text-red-700'}`}>
+                            {Math.abs(diferencia) < 0.5 ? 'Cuadra' : diferencia > 0 ? 'Sobra' : 'Falta'}
+                          </span>
+                          <span className={`text-sm font-bold ${Math.abs(diferencia) < 0.5 ? 'text-emerald-700' : 'text-red-700'}`}>
+                            {Math.abs(diferencia) < 0.5 ? '0€' : `${diferencia > 0 ? '+' : ''}${diferencia.toFixed(0)}€`}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
               })}
+
+              {/* Total */}
+              <div className="flex justify-between text-sm p-4 bg-slate-900 rounded-2xl">
+                <span className="font-semibold text-white">Total al cierre de {fmtMes(cuadreMes)}</span>
+                <span className="font-bold text-lg text-white">
+                  {CAJAS_INFO.reduce((a, c) => a + saldoInicial[c.id] + inMes[c.id] - outMes[c.id], 0).toFixed(0)}€
+                </span>
+              </div>
+
+              {pendientesReembolso.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+                  <p className="text-xs font-semibold text-amber-800 mb-1">
+                    Fuera de caja: {pendientesReembolso.reduce((a, e) => a + e.amount, 0)}€ adelantados
+                  </p>
+                  <p className="text-[11px] text-amber-700">
+                    {pendientesReembolso.length} {pendientesReembolso.length === 1 ? 'gasto pagado' : 'gastos pagados'} con dinero propio.
+                    No se descuentan de la caja hasta que se devuelven, así que el conteo físico no se ve afectado.
+                    Se marcan como devueltos desde Gastos.
+                  </p>
+                </div>
+              )}
+
+              <p className="text-[10px] text-slate-400 px-1">
+                El importe contado se guarda en este dispositivo, no en el servidor.
+              </p>
             </div>
           );
         })()}
@@ -1454,6 +1767,9 @@ export function AdminPanel() {
                       </div>
                     </div>
                   </div>
+                  <p className="text-[10px] text-slate-500">
+                    Entra en: {cajaLabel(cajaDeReserva(Number(form.room_id), form.deposit_method))}
+                  </p>
                 </div>
 
                 {/* Pago al ingreso */}
@@ -1476,6 +1792,9 @@ export function AdminPanel() {
                       </div>
                     </div>
                   </div>
+                  <p className="text-[10px] text-slate-500 mt-3">
+                    Entra en: {cajaLabel(cajaDeReserva(Number(form.room_id), form.checkin_method))}
+                  </p>
                 </div>
 
                 {/* Resumen */}
@@ -1594,6 +1913,31 @@ export function AdminPanel() {
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Descripción *</label>
                   <input required value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="Ej: Compra sofá salón" />
                 </div>
+
+                {/* Quién lo pagó */}
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Lo pagó *</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {PAGADORES.map(p => (
+                      <button key={p} type="button" onClick={() => setExpenseForm(f => ({ ...f, paid_by: p }))}
+                        className={`py-2.5 rounded-xl text-xs font-semibold border transition-colors ${expenseForm.paid_by === p ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="flex items-start gap-2 cursor-pointer mt-3">
+                    <input type="checkbox" checked={expenseForm.own_money}
+                      onChange={e => setExpenseForm(f => ({ ...f, own_money: e.target.checked }))}
+                      className="w-4 h-4 mt-0.5 rounded border-slate-300 accent-[#E05A2B]" />
+                    <span className="text-xs text-slate-600">
+                      Lo puso de su bolsillo
+                      <span className="block text-[10px] text-slate-400">
+                        No sale de la caja hasta que se le devuelve el dinero.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
                   <div className="flex flex-wrap gap-2">
@@ -1605,7 +1949,9 @@ export function AdminPanel() {
                     ))}
                   </div>
                   <p className="text-[10px] text-slate-400 mt-1.5">
-                    Se descuenta de: {cajaLabel(cajaDeGasto(expenseForm.property_id, expenseForm.payment_method))}
+                    {expenseForm.own_money
+                      ? `Se descontará de ${cajaLabel(cajaDeGasto(expenseForm.property_id, expenseForm.payment_method))} al devolver el dinero.`
+                      : `Se descuenta de: ${cajaLabel(cajaDeGasto(expenseForm.property_id, expenseForm.payment_method))}`}
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
