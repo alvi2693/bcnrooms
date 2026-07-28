@@ -6,6 +6,7 @@ import { NotFound } from "./pages/NotFound";
 import { RoomPage } from "./pages/RoomPage";
 import { AdminPanel } from "./pages/AdminPanel";
 import { OwnerPanel } from "./pages/OwnerPanel";
+import { CalendarPanel } from "./pages/CalendarPanel";
 
 export const router = createBrowserRouter([
   {
@@ -15,6 +16,10 @@ export const router = createBrowserRouter([
   {
     path: "/owner",
     Component: OwnerPanel,
+  },
+  {
+    path: "/calendario",
+    Component: CalendarPanel,
   },
   {
     path: "/",
