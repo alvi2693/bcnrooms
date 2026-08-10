@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, LayoutList, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale } from 'lucide-react';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale, Calculator, UserX, KeyRound, Loader2 } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -22,14 +22,19 @@ const PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Depósito bancario', 'Pay
 const EXPENSE_CATEGORIES = ['🛋️ Mobiliario', '🔧 Mantenimiento', '🧹 Limpieza', '💡 Suministros', '🏠 Alquiler/Hipoteca', '📦 Equipamiento', '📋 Otros'];
 const PAGADORES = ['Alvaro', 'Jeffer'];
 
-// Un método se clasifica en 'Efectivo' o en 'Banco' (todo lo que entra a la cuenta bancaria).
+// Solo las medianas del Born admiten renta mensual.
+const MONTHLY_ROOM_IDS = [2, 3, 4];
+function admiteMensual(room_id: number): boolean {
+  return MONTHLY_ROOM_IDS.includes(Number(room_id));
+}
+
 type Caja = 'born' | 'sagrera' | 'bbva';
 const CASH_METHODS = ['Efectivo'];
 
-const CAJAS_INFO: { id: Caja; label: string; short: string; icon: string; color: string; bg: string; border: string; countLabel: string }[] = [
-  { id: 'born',    label: 'Caja El Born',  short: 'Born',    icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200', countLabel: 'Efectivo contado' },
-  { id: 'sagrera', label: 'Caja Sagrera',  short: 'Sagrera', icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-200',    countLabel: 'Efectivo contado' },
-  { id: 'bbva',    label: 'Cuenta BBVA',   short: 'BBVA',    icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',  border: 'border-slate-300',   countLabel: 'Saldo real en el banco' },
+const CAJAS_INFO: { id: Caja; label: string; icon: string; color: string; bg: string; border: string; countLabel: string }[] = [
+  { id: 'born',    label: 'Caja El Born', icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200', countLabel: 'Efectivo contado' },
+  { id: 'sagrera', label: 'Caja Sagrera', icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-200',    countLabel: 'Efectivo contado' },
+  { id: 'bbva',    label: 'Cuenta BBVA',  icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',  border: 'border-slate-300',   countLabel: 'Saldo real en el banco' },
 ];
 
 const ROOM_TO_PROPERTY: Record<number, string> = {
@@ -38,34 +43,22 @@ const ROOM_TO_PROPERTY: Record<number, string> = {
   7: 'sagrada',
 };
 
-function isCash(method?: string): boolean {
-  return CASH_METHODS.includes((method || '').trim());
-}
+function isCash(method?: string): boolean { return CASH_METHODS.includes((method || '').trim()); }
 
-// Efectivo -> caja del piso. Cualquier otro método -> BBVA.
 function cajaDeReserva(room_id: number, method?: string): Caja {
   if (!isCash(method)) return 'bbva';
   return ROOM_TO_PROPERTY[Number(room_id)] === 'born' ? 'born' : 'sagrera';
 }
-
 function cajaDeGasto(property_id: string, method?: string): Caja {
   if (!isCash(method)) return 'bbva';
   return property_id === 'born' ? 'born' : 'sagrera';
 }
+function cajaLabel(c: Caja): string { return CAJAS_INFO.find(x => x.id === c)!.label; }
 
-function cajaLabel(c: Caja): string {
-  return CAJAS_INFO.find(x => x.id === c)!.label;
-}
-
-// Pisos gestionados para terceros: el dinero no es nuestro, solo la comisión.
-const MANAGED_ROOM_IDS = [7]; // Sagrada Família
+const MANAGED_ROOM_IDS = [7];
 const DEFAULT_COMMISSION_PER_PAX_NIGHT = 4;
+function isManaged(room_id: number): boolean { return MANAGED_ROOM_IDS.includes(Number(room_id)); }
 
-function isManaged(room_id: number): boolean {
-  return MANAGED_ROOM_IDS.includes(Number(room_id));
-}
-
-// Comisión sugerida (solo valor por defecto al crear; el importe real se guarda editable)
 function suggestCommission(room_id: number, num_persons: number, check_in: string, check_out: string): number {
   if (!isManaged(room_id)) return 0;
   const nights = calcNights(check_in, check_out);
@@ -94,6 +87,8 @@ interface Reservation {
   checkin_amount?: number; checkin_method?: string;
   commission_amount?: number; collected_by_us?: boolean;
   settled_at?: string | null; settled_method?: string | null;
+  no_show?: boolean;
+  rental_type?: string; monthly_rate?: number;
   created_at?: string;
 }
 
@@ -104,6 +99,12 @@ interface Expense {
   paid_by?: string | null; own_money?: boolean; reimbursed_at?: string | null;
 }
 
+interface RentPayment {
+  id: number; reservation_id: number; period_start: string;
+  amount: number; paid_at?: string | null; method?: string | null;
+  guest_name?: string; room_id?: number; room_name?: string;
+}
+
 const emptyForm = {
   room_id: 1, guest_name: '', guest_email: '', guest_phone: '',
   guest_nationality: '', num_persons: 1, check_in: '', check_out: '',
@@ -111,6 +112,7 @@ const emptyForm = {
   deposit_amount: '', deposit_method: 'Transferencia',
   checkin_amount: '', checkin_method: 'Efectivo',
   commission_amount: '', collected_by_us: false,
+  rental_type: 'nightly', monthly_rate: '', months_count: '1',
   channel: 'WhatsApp', notes: '',
 };
 
@@ -123,8 +125,7 @@ const emptyExpenseForm = {
 
 function addDays(date: Date, days: number): Date { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
 
-// OJO: usamos la fecha LOCAL, no toISOString (que es UTC y en verano
-// adelanta un día a partir de las 22:00 hora española).
+// Fecha LOCAL, no UTC: toISOString adelanta un día por la noche en verano.
 function localDateStr(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -132,48 +133,58 @@ function localDateStr(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 function toDateStr(date: Date): string { return localDateStr(date); }
+function parseYMD(s: string): Date { return new Date(s.split('T')[0] + 'T00:00:00'); }
 
 function fmtDate(str: string): string {
   if (!str) return '';
-  const d = new Date(str.split('T')[0] + 'T00:00:00');
-  return d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+  return parseYMD(str).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+}
+function fmtDateLargo(str: string): string {
+  if (!str) return '';
+  return parseYMD(str).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'long' });
 }
 function calcNights(a: string, b: string): number {
   if (!a || !b) return 0;
-  return Math.ceil((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+  return Math.ceil((parseYMD(b).getTime() - parseYMD(a).getTime()) / 86400000);
 }
-function onlyDate(v?: string | null): string {
-  return v ? String(v).split('T')[0] : '';
+function onlyDate(v?: string | null): string { return v ? String(v).split('T')[0] : ''; }
+
+function esMensual(r: { rental_type?: string }): boolean { return r.rental_type === 'monthly'; }
+
+// Suma meses conservando el día, ajustando si el mes destino es más corto.
+function sumarMesesFecha(ymd: string, n: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, m - 1 + n, 1);
+  const ultimoDia = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+  dt.setDate(Math.min(d, ultimoDia));
+  return localDateStr(dt);
 }
 
-// La comisión liquidada entra en la caja según el método elegido al liquidar.
-// Efectivo -> caja Sagrera (Sagrada no tiene caja propia). Cualquier otro -> BBVA.
 function cajaDeComision(method?: string | null): Caja {
   return isCash(method || undefined) ? 'sagrera' : 'bbva';
 }
-
-// Comisión que el propietario nos debe (aún sin liquidar)
 function comisionPendiente(r: Reservation): number {
   if (!isManaged(r.room_id) || r.settled_at) return 0;
   return Number(r.commission_amount) || 0;
 }
 
+// Lo que falta por cobrar. Un no-show ya no debe nada: ese dinero no llegará.
+function pendienteDe(r: Reservation): number {
+  if (r.no_show) return 0;
+  return Math.max(0, (r.price_total || 0) - (r.price_paid || 0));
+}
+
 // ─────────────────────────────────────────────
 // MOVIMIENTOS DE CAJA
-// Cada euro que entra o sale de una caja, con su fecha real.
-// Es la única fuente de verdad para el balance y para el cuadre.
+// Cada euro que entra o sale, con su fecha real.
+// Única fuente de verdad para balance y cuadre.
 // ─────────────────────────────────────────────
 type Movimiento = {
-  key: string;
-  date: string;
-  caja: Caja;
-  tipo: 'in' | 'out';
-  concepto: string;
-  detalle: string;
-  amount: number;
+  key: string; date: string; caja: Caja; tipo: 'in' | 'out';
+  concepto: string; detalle: string; amount: number;
 };
 
-function construirMovimientos(reservations: Reservation[], expenses: Expense[]): Movimiento[] {
+function construirMovimientos(reservations: Reservation[], expenses: Expense[], rentPayments: RentPayment[]): Movimiento[] {
   const movs: Movimiento[] = [];
 
   reservations.forEach(r => {
@@ -192,15 +203,30 @@ function construirMovimientos(reservations: Reservation[], expenses: Expense[]):
 
     const dep = Number(r.deposit_amount) || 0;
     const chk = Number(r.checkin_amount) || 0;
+    const marca = r.no_show ? ' · no vino' : '';
     // El pago de reserva se cobra al crearla; el del ingreso, el día del check-in.
     const fechaDep = onlyDate(r.created_at) || r.check_in;
     if (dep > 0) movs.push({
       key: `dep-${r.id}`, date: fechaDep, caja: cajaDeReserva(r.room_id, r.deposit_method), tipo: 'in',
-      concepto: r.guest_name, detalle: `Pago de reserva · ${r.deposit_method || '—'}`, amount: dep,
+      concepto: r.guest_name, detalle: `Pago de reserva · ${r.deposit_method || '—'}${marca}`, amount: dep,
     });
     if (chk > 0) movs.push({
       key: `chk-${r.id}`, date: r.check_in, caja: cajaDeReserva(r.room_id, r.checkin_method), tipo: 'in',
-      concepto: r.guest_name, detalle: `Pago al ingresar · ${r.checkin_method || '—'}`, amount: chk,
+      concepto: r.guest_name, detalle: `Pago al ingresar · ${r.checkin_method || '—'}${marca}`, amount: chk,
+    });
+  });
+
+  // Mensualidades ya cobradas del Born.
+  rentPayments.forEach(p => {
+    const fecha = onlyDate(p.paid_at);
+    const amt = Number(p.amount) || 0;
+    if (!fecha || amt <= 0) return;
+    movs.push({
+      key: `rent-${p.id}`, date: fecha,
+      caja: cajaDeReserva(Number(p.room_id) || 2, p.method || undefined), tipo: 'in',
+      concepto: p.guest_name || 'Renta mensual',
+      detalle: `Mensualidad ${fmtMesCorto(p.period_start)} · ${p.method || '—'}`,
+      amount: amt,
     });
   });
 
@@ -246,15 +272,16 @@ function fmtMes(ym: string): string {
   const [y, m] = ym.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 }
+function fmtMesCorto(fecha: string): string {
+  if (!fecha) return '';
+  return parseYMD(fecha).toLocaleDateString('es-ES', { month: 'short', year: '2-digit' });
+}
 
 // VAPID viene en base64url; pushManager.subscribe necesita bytes, no string.
-// Este era el motivo por el que la suscripción nunca llegaba a guardarse.
 function urlBase64ToUint8Array(base64String: string): BufferSource {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = window.atob(base64);
-  // Reservamos el ArrayBuffer explícitamente: TypeScript 5.7+ rechaza
-  // un Uint8Array genérico donde se espera un BufferSource.
   const buffer = new ArrayBuffer(raw.length);
   const output = new Uint8Array(buffer);
   for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
@@ -292,13 +319,27 @@ function NationalitySearch({ value, onChange }: { value: string; onChange: (v: s
   );
 }
 
+// Botón de icono con área táctil de 44px, el mínimo cómodo en móvil.
+function IconButton({ onClick, title, className = '', children }: {
+  onClick: (e: React.MouseEvent) => void; title: string; className?: string; children: React.ReactNode;
+}) {
+  return (
+    <button type="button" onClick={onClick} aria-label={title} title={title}
+      className={`w-11 h-11 flex items-center justify-center rounded-xl flex-shrink-0 active:scale-95 transition-transform ${className}`}>
+      {children}
+    </button>
+  );
+}
+
 export function AdminPanel() {
   const [token, setToken] = useState(() => localStorage.getItem('admin_token') || '');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [rentPayments, setRentPayments] = useState<RentPayment[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -308,7 +349,7 @@ export function AdminPanel() {
   const [formError, setFormError] = useState('');
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
-  const [activeTab, setActiveTab] = useState<'today' | 'list' | 'calendar' | 'expenses' | 'stats' | 'cuadre'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'calc' | 'calendar' | 'expenses' | 'stats' | 'cuadre'>('today');
   const [showPayModal, setShowPayModal] = useState(false);
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('Efectivo');
@@ -317,6 +358,22 @@ export function AdminPanel() {
   const [showSettleModal, setShowSettleModal] = useState(false);
   const [settleMethod, setSettleMethod] = useState<'Efectivo' | 'BBVA'>('Efectivo');
   const [settleTargetId, setSettleTargetId] = useState<number | null>(null);
+
+  // Un solo indicador para cualquier operación en vuelo. Mientras esté
+  // activo, los botones quedan bloqueados: es lo que evita que quince
+  // toques durante un arranque en frío creen quince reservas.
+  const [busy, setBusy] = useState(false);
+
+  // Sustituye a confirm(), que Safari suprime en las apps instaladas
+  // desde la pantalla de inicio y devuelve false sin avisar.
+  const [confirmDialog, setConfirmDialog] = useState<{
+    titulo: string; mensaje: string; etiqueta: string; peligro?: boolean; accion: () => Promise<void> | void;
+  } | null>(null);
+
+  // Cobro de una mensualidad
+  const [rentModal, setRentModal] = useState<RentPayment | null>(null);
+  const [rentMethod, setRentMethod] = useState('Efectivo');
+  const [rentAmount, setRentAmount] = useState('');
 
   // Cuadre mensual
   const [cuadreMes, setCuadreMes] = useState<string>(() => mesActualStr());
@@ -331,34 +388,80 @@ export function AdminPanel() {
     });
   }
 
+  // Calculadora de noches
+  const [calcIn, setCalcIn] = useState(() => localDateStr(new Date()));
+  const [calcOut, setCalcOut] = useState(() => localDateStr(addDays(new Date(), 2)));
+  const [calcPPN, setCalcPPN] = useState('');
+
   const COL_W = 52;
   const ROW_H = 52;
-  const LABEL_W = 140;
-  const DIAS_ATRAS = 21;
-  const DIAS_ADELANTE = 200;
+  const LABEL_W = 132;
+  const DIAS_ADELANTE = 210;
+  const PASO_ATRAS = 21;
   const today = toDateStr(new Date());
   const isLoggedIn = !!token;
 
-  // Rango largo y fijo: el calendario se navega scrolleando, sin flechas.
+  // El calendario arranca en hoy y solo avanza. Para ver el pasado hay
+  // que pedirlo con la flecha, que va revelando tres semanas cada vez.
+  const [diasAtras, setDiasAtras] = useState(0);
   const days: Date[] = useMemo(() => {
-    const origen = addDays(new Date(), -DIAS_ATRAS);
+    const origen = addDays(new Date(), -diasAtras);
     const arr: Date[] = [];
-    for (let i = 0; i < DIAS_ATRAS + DIAS_ADELANTE; i++) arr.push(addDays(origen, i));
+    for (let i = 0; i < diasAtras + DIAS_ADELANTE; i++) arr.push(addDays(origen, i));
     return arr;
-  }, [today]);
+  }, [diasAtras, today]);
+
+  // Tramos de mes para pintar la banda superior y alternar el fondo.
+  const tramosMes = useMemo(() => {
+    const g: { key: string; label: string; corto: string; startIdx: number; count: number }[] = [];
+    days.forEach((d, i) => {
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      const ultimo = g[g.length - 1];
+      if (ultimo && ultimo.key === key) ultimo.count++;
+      else g.push({
+        key,
+        label: d.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+        corto: d.toLocaleDateString('es-ES', { month: 'short' }),
+        startIdx: i, count: 1,
+      });
+    });
+    return g;
+  }, [days]);
+
+  const indiceDeMes = useMemo(() => {
+    const m: Record<string, number> = {};
+    tramosMes.forEach((t, i) => { m[t.key] = i; });
+    return m;
+  }, [tramosMes]);
 
   const calScrollRef = useRef<HTMLDivElement>(null);
   const [calMesVisible, setCalMesVisible] = useState('');
+  const ajustePendiente = useRef(0);
 
   function scrollHastaHoy(smooth = true) {
     const el = calScrollRef.current;
     if (!el) return;
     const idx = days.findIndex(d => toDateStr(d) === today);
     if (idx < 0) return;
-    el.scrollTo({ left: Math.max(0, idx * COL_W - COL_W * 2), behavior: smooth ? 'smooth' : 'auto' });
+    el.scrollTo({ left: Math.max(0, idx * COL_W - COL_W), behavior: smooth ? 'smooth' : 'auto' });
   }
 
-  // Al abrir el calendario: colocarse en hoy y seguir el mes que se está viendo.
+  function verMasPasado() {
+    // Al añadir días por la izquierda todo el contenido se desplaza.
+    // Guardamos cuánto para recolocar el scroll y que no dé un salto.
+    ajustePendiente.current = PASO_ATRAS * COL_W;
+    setDiasAtras(d => d + PASO_ATRAS);
+  }
+
+  useEffect(() => {
+    const el = calScrollRef.current;
+    if (!el || !ajustePendiente.current) return;
+    const delta = ajustePendiente.current;
+    ajustePendiente.current = 0;
+    el.scrollLeft += delta;                                  // mantiene la vista
+    el.scrollTo({ left: Math.max(0, el.scrollLeft - delta), behavior: 'smooth' }); // y desliza al pasado
+  }, [diasAtras]);
+
   useEffect(() => {
     if (activeTab !== 'calendar') return;
     const el = calScrollRef.current;
@@ -367,7 +470,7 @@ export function AdminPanel() {
       const idx = Math.min(days.length - 1, Math.max(0, Math.round(el.scrollLeft / COL_W)));
       setCalMesVisible(days[idx].toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
     };
-    scrollHastaHoy(false);
+    if (diasAtras === 0) scrollHastaHoy(false);
     actualizarMes();
     el.addEventListener('scroll', actualizarMes, { passive: true });
     return () => el.removeEventListener('scroll', actualizarMes);
@@ -375,13 +478,16 @@ export function AdminPanel() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
+    if (loggingIn) return;
     if (username !== 'admin') { setLoginError('Usuario incorrecto'); return; }
+    setLoggingIn(true);
     try {
       const res = await fetch(`${BACKEND_URL}/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
       const data = await res.json();
       if (data.token) { setToken(data.token); localStorage.setItem('admin_token', data.token); setLoginError(''); }
       else setLoginError('Contraseña incorrecta');
-    } catch { setLoginError('Error de conexión'); }
+    } catch { setLoginError('No se pudo conectar. El servidor puede estar despertando; inténtalo otra vez.'); }
+    finally { setLoggingIn(false); }
   }
 
   function handleLogout() { setToken(''); localStorage.removeItem('admin_token'); }
@@ -393,17 +499,19 @@ export function AdminPanel() {
       const data = await res.json();
       setReservations(data.map((r: any) => ({
         ...r,
-        check_in: r.check_in ? r.check_in.split('T')[0] : r.check_in,
-        check_out: r.check_out ? r.check_out.split('T')[0] : r.check_out,
-        price_total: r.price_total ? Number(r.price_total) : 0,
-        price_per_night: r.price_per_night ? Number(r.price_per_night) : 0,
-        price_paid: r.price_paid ? Number(r.price_paid) : 0,
-        deposit_amount: r.deposit_amount ? Number(r.deposit_amount) : 0,
-        checkin_amount: r.checkin_amount ? Number(r.checkin_amount) : 0,
-        commission_amount: r.commission_amount ? Number(r.commission_amount) : 0,
+        check_in: onlyDate(r.check_in), check_out: onlyDate(r.check_out),
+        price_total: Number(r.price_total) || 0,
+        price_per_night: Number(r.price_per_night) || 0,
+        price_paid: Number(r.price_paid) || 0,
+        deposit_amount: Number(r.deposit_amount) || 0,
+        checkin_amount: Number(r.checkin_amount) || 0,
+        commission_amount: Number(r.commission_amount) || 0,
         collected_by_us: !!r.collected_by_us,
-        settled_at: r.settled_at ? r.settled_at.split('T')[0] : null,
+        settled_at: r.settled_at ? onlyDate(r.settled_at) : null,
         settled_method: r.settled_method || null,
+        no_show: !!r.no_show,
+        rental_type: r.rental_type || 'nightly',
+        monthly_rate: Number(r.monthly_rate) || 0,
         created_at: r.created_at || undefined,
         num_persons: Number(r.num_persons),
       })));
@@ -415,57 +523,142 @@ export function AdminPanel() {
       const res = await fetch(`${BACKEND_URL}/admin/expenses`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       setExpenses(data.map((e: any) => ({
-        ...e,
-        amount: Number(e.amount),
-        date: e.date?.split('T')[0] || e.date,
-        paid_by: e.paid_by || null,
-        own_money: !!e.own_money,
-        reimbursed_at: e.reimbursed_at ? String(e.reimbursed_at).split('T')[0] : null,
+        ...e, amount: Number(e.amount), date: onlyDate(e.date),
+        paid_by: e.paid_by || null, own_money: !!e.own_money,
+        reimbursed_at: e.reimbursed_at ? onlyDate(e.reimbursed_at) : null,
       })));
     } catch {}
   }
 
-  useEffect(() => { if (isLoggedIn) { fetchReservations(); fetchExpenses(); } }, [isLoggedIn]);
-  useEffect(() => { if (isLoggedIn && 'Notification' in window) setPushEnabled(Notification.permission === 'granted'); }, [isLoggedIn]);
-
-  const movimientos = useMemo(() => construirMovimientos(reservations, expenses), [reservations, expenses]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault(); setFormError('');
-    const room = ALL_ROOMS.find(r => r.id === Number(form.room_id));
-    const payload = {
-      ...form,
-      room_id: Number(form.room_id),
-      room_name: room ? `${room.propertyName} - ${room.name}` : '',
-      num_persons: Number(form.num_persons),
-      price_total: form.price_total ? Number(form.price_total) : null,
-      price_per_night: form.price_per_night ? Number(form.price_per_night) : null,
-      deposit_amount: Number(form.deposit_amount) || 0,
-      checkin_amount: Number(form.checkin_amount) || 0,
-      commission_amount: Number(form.commission_amount) || 0,
-      collected_by_us: !!form.collected_by_us,
-    };
-    const url = editingId ? `${BACKEND_URL}/admin/reservations/${editingId}` : `${BACKEND_URL}/admin/reservations`;
-    const res = await fetch(url, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
-    const data = await res.json();
-    if (!res.ok) { setFormError(data.error || 'Error al guardar'); return; }
-    setShowForm(false); setEditingId(null); setForm(emptyForm); setFormError(''); fetchReservations();
+  async function fetchRentPayments() {
+    try {
+      const res = await fetch(`${BACKEND_URL}/admin/rent-payments`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRentPayments(data.map((p: any) => ({
+        ...p, amount: Number(p.amount) || 0,
+        period_start: onlyDate(p.period_start),
+        paid_at: p.paid_at ? onlyDate(p.paid_at) : null,
+        room_id: Number(p.room_id),
+      })));
+    } catch {}
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm('¿Eliminar esta reserva?')) return;
-    await fetch(`${BACKEND_URL}/admin/reservations/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-    setSelectedRes(null); fetchReservations();
+  function recargarTodo() { fetchReservations(); fetchExpenses(); fetchRentPayments(); }
+
+  useEffect(() => { if (isLoggedIn) recargarTodo(); }, [isLoggedIn]);
+  useEffect(() => { if (isLoggedIn && 'Notification' in window) setPushEnabled(Notification.permission === 'granted'); }, [isLoggedIn]);
+
+  const movimientos = useMemo(
+    () => construirMovimientos(reservations, expenses, rentPayments),
+    [reservations, expenses, rentPayments]
+  );
+
+  const cuotasDe = (resId: number) =>
+    rentPayments.filter(p => p.reservation_id === resId).sort((a, b) => a.period_start.localeCompare(b.period_start));
+
+  const mensualidadesPendientes = useMemo(
+    () => rentPayments.filter(p => !p.paid_at).sort((a, b) => a.period_start.localeCompare(b.period_start)),
+    [rentPayments]
+  );
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy) return;                       // corta el doble envío en seco
+    setFormError('');
+    setBusy(true);
+    try {
+      const room = ALL_ROOMS.find(r => r.id === Number(form.room_id));
+      const mensual = form.rental_type === 'monthly' && admiteMensual(Number(form.room_id));
+      const payload = {
+        ...form,
+        room_id: Number(form.room_id),
+        room_name: room ? `${room.propertyName} - ${room.name}` : '',
+        num_persons: Number(form.num_persons),
+        price_total: form.price_total ? Number(form.price_total) : null,
+        price_per_night: form.price_per_night ? Number(form.price_per_night) : null,
+        deposit_amount: Number(form.deposit_amount) || 0,
+        checkin_amount: Number(form.checkin_amount) || 0,
+        commission_amount: Number(form.commission_amount) || 0,
+        collected_by_us: !!form.collected_by_us,
+        rental_type: mensual ? 'monthly' : 'nightly',
+        monthly_rate: mensual ? Number(form.monthly_rate) || 0 : null,
+        months_count: mensual ? Number(form.months_count) || 1 : null,
+      };
+      const url = editingId ? `${BACKEND_URL}/admin/reservations/${editingId}` : `${BACKEND_URL}/admin/reservations`;
+      const res = await fetch(url, {
+        method: editingId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setFormError(data.error || `El servidor respondió ${res.status}`); return; }
+      setShowForm(false); setEditingId(null); setForm(emptyForm); setFormError('');
+      recargarTodo();
+    } catch {
+      setFormError('No se pudo conectar con el servidor. Comprueba la conexión y vuelve a intentarlo.');
+    } finally { setBusy(false); }
+  }
+
+  function pedirBorrarReserva(r: Reservation) {
+    setConfirmDialog({
+      titulo: 'Eliminar reserva',
+      mensaje: `Se borrará la reserva de ${r.guest_name} y todo lo cobrado en ella dejará de contar en las cajas. Si el huésped no vino pero dejó una señal, usa "No vino" en lugar de eliminar.`,
+      etiqueta: 'Eliminar',
+      peligro: true,
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/reservations/${r.id}`, {
+          method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        setSelectedRes(null);
+        recargarTodo();
+      },
+    });
+  }
+
+  function pedirNoShow(r: Reservation) {
+    const cobrado = r.price_paid || 0;
+    setConfirmDialog({
+      titulo: 'Marcar que no vino',
+      mensaje: `La reserva de ${r.guest_name} se conserva y los ${cobrado.toFixed(0)}€ ya cobrados siguen contando como ingreso. La habitación queda libre desde ahora y puedes volver a venderla en esas fechas.`,
+      etiqueta: 'Sí, no vino',
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/no-show`, {
+          method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        setSelectedRes(null);
+        recargarTodo();
+      },
+    });
+  }
+
+  function pedirDeshacerNoShow(r: Reservation) {
+    setConfirmDialog({
+      titulo: 'Deshacer',
+      mensaje: `La reserva de ${r.guest_name} vuelve a ocupar la habitación. Si esas fechas ya se han vendido a otra persona, no se podrá.`,
+      etiqueta: 'Deshacer',
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/undo-no-show`, {
+          method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `El servidor respondió ${res.status}`);
+        setSelectedRes(null);
+        recargarTodo();
+      },
+    });
   }
 
   function handleEdit(r: Reservation) {
     const prop = PROPERTIES.find(p => p.rooms.some(rm => rm.id === r.room_id));
     if (prop) setSelectedProperty(prop.id);
+    const cuotas = cuotasDe(r.id);
     setForm({
       room_id: r.room_id, guest_name: r.guest_name, guest_email: r.guest_email || '',
       guest_phone: r.guest_phone || '', guest_nationality: r.guest_nationality || '',
-      num_persons: r.num_persons, check_in: r.check_in?.split('T')[0] || '',
-      check_out: r.check_out?.split('T')[0] || '',
+      num_persons: r.num_persons, check_in: onlyDate(r.check_in), check_out: onlyDate(r.check_out),
       price_per_night: r.price_per_night?.toString() || '',
       price_total: r.price_total?.toString() || '',
       deposit_amount: r.deposit_amount?.toString() || '',
@@ -474,24 +667,48 @@ export function AdminPanel() {
       checkin_method: r.checkin_method || 'Efectivo',
       commission_amount: r.commission_amount?.toString() || '',
       collected_by_us: !!r.collected_by_us,
+      rental_type: r.rental_type || 'nightly',
+      monthly_rate: r.monthly_rate ? String(r.monthly_rate) : '',
+      months_count: String(cuotas.length || 1),
       channel: r.channel || 'WhatsApp', notes: r.notes || ''
     });
-    setEditingId(r.id); setSelectedRes(null); setShowForm(true);
+    setEditingId(r.id); setSelectedRes(null); setFormError(''); setShowForm(true);
   }
 
   async function handleExpenseSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const prop = PROPERTIES.find(p => p.id === expenseForm.property_id);
-    const payload = { ...expenseForm, property_name: prop?.name || '', amount: Number(expenseForm.amount) };
-    const url = editingExpenseId ? `${BACKEND_URL}/admin/expenses/${editingExpenseId}` : `${BACKEND_URL}/admin/expenses`;
-    await fetch(url, { method: editingExpenseId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
-    setShowExpenseForm(false); setEditingExpenseId(null); setExpenseForm(emptyExpenseForm); fetchExpenses();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const prop = PROPERTIES.find(p => p.id === expenseForm.property_id);
+      const payload = { ...expenseForm, property_name: prop?.name || '', amount: Number(expenseForm.amount) };
+      const url = editingExpenseId ? `${BACKEND_URL}/admin/expenses/${editingExpenseId}` : `${BACKEND_URL}/admin/expenses`;
+      const res = await fetch(url, {
+        method: editingExpenseId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) { alert(`No se pudo guardar el gasto (${res.status})`); return; }
+      setShowExpenseForm(false); setEditingExpenseId(null); setExpenseForm(emptyExpenseForm);
+      fetchExpenses();
+    } catch { alert('No se pudo conectar con el servidor'); }
+    finally { setBusy(false); }
   }
 
-  async function handleExpenseDelete(id: number) {
-    if (!confirm('¿Eliminar este gasto?')) return;
-    await fetch(`${BACKEND_URL}/admin/expenses/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-    fetchExpenses();
+  function pedirBorrarGasto(ex: Expense) {
+    setConfirmDialog({
+      titulo: 'Eliminar gasto',
+      mensaje: `Se borrará "${ex.description}" de ${ex.amount}€ y dejará de descontarse de la caja.`,
+      etiqueta: 'Eliminar',
+      peligro: true,
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/expenses/${ex.id}`, {
+          method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        fetchExpenses();
+      },
+    });
   }
 
   function handleExpenseEdit(ex: Expense) {
@@ -504,10 +721,14 @@ export function AdminPanel() {
   }
 
   async function handleReembolso(id: number, deshacer = false) {
-    await fetch(`${BACKEND_URL}/admin/expenses/${id}/${deshacer ? 'unreimburse' : 'reimburse'}`, {
-      method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
-    });
-    fetchExpenses();
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fetch(`${BACKEND_URL}/admin/expenses/${id}/${deshacer ? 'unreimburse' : 'reimburse'}`, {
+        method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchExpenses();
+    } finally { setBusy(false); }
   }
 
   function handlePPN(val: string) {
@@ -518,10 +739,14 @@ export function AdminPanel() {
   function handleCIO(key: 'check_in' | 'check_out', val: string) {
     setForm(f => {
       const u = { ...f, [key]: val };
+      if (u.rental_type === 'monthly') {
+        // En renta mensual el check-out lo marcan los meses, no el usuario.
+        if (key === 'check_in' && val) u.check_out = sumarMesesFecha(val, Number(u.months_count) || 1);
+        return u;
+      }
       const n = calcNights(key === 'check_in' ? val : f.check_in, key === 'check_out' ? val : f.check_out);
       const pn = parseFloat(f.price_per_night) || 0;
       const next = { ...u, price_total: n > 0 && pn > 0 ? (pn * n).toFixed(2) : u.price_total };
-      // En pisos gestionados, sugerimos la comisión automáticamente (sigue siendo editable)
       if (isManaged(Number(next.room_id))) {
         const sug = suggestCommission(Number(next.room_id), Number(next.num_persons), next.check_in, next.check_out);
         if (sug > 0) next.commission_amount = sug.toString();
@@ -530,79 +755,143 @@ export function AdminPanel() {
     });
   }
 
-  // Posición de la barra en píxeles, usando medios días (check-in entra a mediodía, check-out sale a mediodía).
-  // El diente diagonal SOLO se aplica cuando hay otra reserva de la misma habitación que encaja ese día.
-  // Devuelve null si la reserva no intersecta el rango visible.
-  function getResBar(res: Reservation): { left: number; width: number; clipStart: boolean; clipEnd: boolean } | null {
-    const firstDay = toDateStr(days[0]);
-    const lastDay = toDateStr(days[days.length - 1]);
-    if (res.check_out < firstDay || res.check_in > lastDay) return null;
+  // Cambia entre alquiler por noches y renta mensual, recalculando fechas y total.
+  function setModalidad(tipo: 'nightly' | 'monthly') {
+    setForm(f => {
+      if (tipo === 'nightly') {
+        return { ...f, rental_type: 'nightly', monthly_rate: '', months_count: '1' };
+      }
+      const meses = Number(f.months_count) || 1;
+      const rate = Number(f.monthly_rate) || 0;
+      return {
+        ...f, rental_type: 'monthly',
+        check_out: f.check_in ? sumarMesesFecha(f.check_in, meses) : f.check_out,
+        price_total: rate > 0 ? (rate * meses).toFixed(2) : f.price_total,
+        price_per_night: '',
+        checkin_amount: '',
+      };
+    });
+  }
 
-    const idxOf = (dateStr: string) => days.findIndex(d => toDateStr(d) === dateStr);
+  function setMeses(n: number) {
+    const meses = Math.max(1, n);
+    setForm(f => {
+      const rate = Number(f.monthly_rate) || 0;
+      return {
+        ...f, months_count: String(meses),
+        check_out: f.check_in ? sumarMesesFecha(f.check_in, meses) : f.check_out,
+        price_total: rate > 0 ? (rate * meses).toFixed(2) : f.price_total,
+      };
+    });
+  }
 
-    const ciIdx = idxOf(res.check_in);
-    const coIdx = idxOf(res.check_out);
+  function setImporteMes(val: string) {
+    setForm(f => {
+      const meses = Number(f.months_count) || 1;
+      const rate = parseFloat(val) || 0;
+      return { ...f, monthly_rate: val, price_total: rate > 0 ? (rate * meses).toFixed(2) : f.price_total };
+    });
+  }
 
-    const salienteEnMiEntrada = reservations.some(
-      o => o.id !== res.id && o.room_id === res.room_id && o.check_out === res.check_in
-    );
-    const entranteEnMiSalida = reservations.some(
-      o => o.id !== res.id && o.room_id === res.room_id && o.check_in === res.check_out
-    );
+  async function confirmarCobroMensualidad() {
+    if (!rentModal || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/admin/rent-payments/${rentModal.id}/pay`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ method: rentMethod, amount: rentAmount === '' ? undefined : Number(rentAmount) }),
+      });
+      if (!res.ok) { alert(`No se pudo registrar el cobro (${res.status})`); return; }
+      setRentModal(null); setRentAmount('');
+      recargarTodo();
+    } catch { alert('No se pudo conectar con el servidor'); }
+    finally { setBusy(false); }
+  }
 
-    const startPx = ciIdx >= 0
-      ? (ciIdx + (salienteEnMiEntrada ? 0.5 : 0)) * COL_W
-      : 0;
-    const endPx = coIdx >= 0
-      ? (coIdx + (entranteEnMiSalida ? 0.5 : 1)) * COL_W
-      : days.length * COL_W;
+  function pedirDeshacerMensualidad(p: RentPayment) {
+    setConfirmDialog({
+      titulo: 'Deshacer cobro',
+      mensaje: `La mensualidad de ${fmtMesCorto(p.period_start)} volverá a figurar como pendiente y saldrá de la caja.`,
+      etiqueta: 'Deshacer',
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/rent-payments/${p.id}/unpay`, {
+          method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        recargarTodo();
+      },
+    });
+  }
 
-    const clipStart = ciIdx >= 0 && salienteEnMiEntrada;
-    const clipEnd = coIdx >= 0 && entranteEnMiSalida;
-
-    return { left: startPx, width: Math.max(endPx - startPx, COL_W * 0.5), clipStart, clipEnd };
+  function pedirProrrogaMes(r: Reservation) {
+    setConfirmDialog({
+      titulo: 'Añadir un mes',
+      mensaje: `Se alarga la estancia de ${r.guest_name} un mes más y se crea una mensualidad nueva de ${(r.monthly_rate || 0).toFixed(0)}€ pendiente de cobro.`,
+      etiqueta: 'Añadir mes',
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/extend-month`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `El servidor respondió ${res.status}`);
+        setSelectedRes(null);
+        recargarTodo();
+      },
+    });
   }
 
   async function handleQuickPay() {
-    if (!payingResId) return;
-    await fetch(`${BACKEND_URL}/admin/reservations/${payingResId}/checkin-payment`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ checkin_amount: Number(payAmount), checkin_method: payMethod }),
-    });
-    setShowPayModal(false);
-    setPayAmount('');
-    setPayingResId(null);
-    setSelectedRes(null);
-    fetchReservations();
-  }
-
-  // Liquida una reserva concreta (settleTargetId) o todas las pendientes si es null.
-  async function handleSettleCommissions() {
-    const pendientes = settleTargetId
-      ? reservations.filter(r => r.id === settleTargetId)
-      : reservations.filter(r => isManaged(r.room_id) && !r.settled_at);
-    for (const r of pendientes) {
-      await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/settle`, {
+    if (!payingResId || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/admin/reservations/${payingResId}/checkin-payment`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ settled_method: settleMethod }),
+        body: JSON.stringify({ checkin_amount: Number(payAmount), checkin_method: payMethod }),
       });
-    }
-    setShowSettleModal(false);
-    setSettleTargetId(null);
-    setSelectedRes(null);
-    fetchReservations();
+      if (!res.ok) { alert(`No se pudo registrar el pago (${res.status})`); return; }
+      setShowPayModal(false); setPayAmount(''); setPayingResId(null); setSelectedRes(null);
+      recargarTodo();
+    } catch { alert('No se pudo conectar con el servidor'); }
+    finally { setBusy(false); }
   }
 
-  async function handleUnsettle(id: number) {
-    if (!confirm('¿Marcar esta comisión como no cobrada?')) return;
-    await fetch(`${BACKEND_URL}/admin/reservations/${id}/unsettle`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  async function handleSettleCommissions() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const pendientes = settleTargetId
+        ? reservations.filter(r => r.id === settleTargetId)
+        : reservations.filter(r => isManaged(r.room_id) && !r.settled_at);
+      for (const r of pendientes) {
+        await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/settle`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ settled_method: settleMethod }),
+        });
+      }
+      setShowSettleModal(false); setSettleTargetId(null); setSelectedRes(null);
+      recargarTodo();
+    } finally { setBusy(false); }
+  }
+
+  function pedirDeshacerLiquidacion(r: Reservation) {
+    setConfirmDialog({
+      titulo: 'Deshacer cobro',
+      mensaje: `La comisión de ${r.guest_name} volverá a figurar como pendiente y saldrá de la caja donde entró.`,
+      etiqueta: 'Deshacer',
+      accion: async () => {
+        const res = await fetch(`${BACKEND_URL}/admin/reservations/${r.id}/unsettle`, {
+          method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        setSelectedRes(null);
+        recargarTodo();
+      },
     });
-    setSelectedRes(null);
-    fetchReservations();
   }
 
   async function enablePush() {
@@ -619,7 +908,8 @@ export function AdminPanel() {
       const { publicKey } = await keyRes.json();
       if (!publicKey) throw new Error('El servidor no devolvió la clave VAPID');
 
-      // Si ya había una suscripción con otra clave, la renovamos.
+      // Si quedaba una suscripción de una instalación anterior, la renovamos.
+      // Sin esto se acumulan suscripciones muertas cada vez que reinstalas.
       const previa = await reg.pushManager.getSubscription();
       if (previa) await previa.unsubscribe().catch(() => {});
 
@@ -628,7 +918,6 @@ export function AdminPanel() {
         applicationServerKey: urlBase64ToUint8Array(publicKey),
       });
 
-      // El backend espera { endpoint, keys: { p256dh, auth } }.
       const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
       if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
         throw new Error('El navegador devolvió una suscripción incompleta');
@@ -651,10 +940,41 @@ export function AdminPanel() {
     }
   }
 
-  const totalPending = reservations.reduce((a, r) => a + ((r.price_total || 0) - (r.price_paid || 0)), 0);
+  // Reservas que ocupan habitación. Un no-show ya no cuenta.
+  const activas = useMemo(() => reservations.filter(r => !r.no_show), [reservations]);
+
+  // Posición de la barra en píxeles, con medios días en los encadenamientos.
+  // El diente diagonal solo se dibuja si hay otra reserva que encaje ese día.
+  function getResBar(res: Reservation): { left: number; width: number; clipStart: boolean; clipEnd: boolean } | null {
+    const firstDay = toDateStr(days[0]);
+    const lastDay = toDateStr(days[days.length - 1]);
+    if (res.check_out < firstDay || res.check_in > lastDay) return null;
+
+    const idxOf = (dateStr: string) => days.findIndex(d => toDateStr(d) === dateStr);
+    const ciIdx = idxOf(res.check_in);
+    const coIdx = idxOf(res.check_out);
+
+    const salienteEnMiEntrada = activas.some(
+      o => o.id !== res.id && o.room_id === res.room_id && o.check_out === res.check_in
+    );
+    const entranteEnMiSalida = activas.some(
+      o => o.id !== res.id && o.room_id === res.room_id && o.check_in === res.check_out
+    );
+
+    const startPx = ciIdx >= 0 ? (ciIdx + (salienteEnMiEntrada ? 0.5 : 0)) * COL_W : 0;
+    const endPx = coIdx >= 0 ? (coIdx + (entranteEnMiSalida ? 0.5 : 1)) * COL_W : days.length * COL_W;
+
+    return {
+      left: startPx,
+      width: Math.max(endPx - startPx, COL_W * 0.5),
+      clipStart: ciIdx >= 0 && salienteEnMiEntrada,
+      clipEnd: coIdx >= 0 && entranteEnMiSalida,
+    };
+  }
+
+  const totalPending = reservations.reduce((a, r) => a + pendienteDe(r), 0);
   const totalCobrado = reservations.reduce((a, r) => a + (r.price_paid || 0), 0);
-  const activeNow = reservations.filter(r => r.check_in <= today && r.check_out >= today).length;
-  const sorted = [...reservations].sort((a, b) => a.check_in.localeCompare(b.check_in));
+  const activeNow = activas.filter(r => r.check_in <= today && r.check_out >= today).length;
 
   if (!isLoggedIn) return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -667,35 +987,43 @@ export function AdminPanel() {
           <div><label className="text-xs font-medium text-slate-600 mb-1 block">Usuario</label><input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" /></div>
           <div><label className="text-xs font-medium text-slate-600 mb-1 block">Contraseña</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="••••••••" /></div>
           {loginError && <p className="text-red-500 text-xs">{loginError}</p>}
-          <button type="submit" className="w-full bg-[#E05A2B] text-white py-3 rounded-xl text-sm font-semibold">Entrar</button>
+          <button type="submit" disabled={loggingIn}
+            className="w-full bg-[#E05A2B] text-white py-3 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+            {loggingIn && <Loader2 className="w-4 h-4 animate-spin" />}
+            {loggingIn ? 'Entrando...' : 'Entrar'}
+          </button>
         </form>
       </motion.div>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-20">
+    <div className="min-h-screen bg-slate-50 pb-24">
       <header className="bg-white border-b border-slate-100 sticky top-0 z-40">
-        <div className="px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-[#E05A2B] p-1.5 rounded-lg"><Calendar className="w-4 h-4 text-white" /></div>
-            <span className="font-bold text-slate-900 text-sm">BCN Rooms Admin</span>
+        <div className="px-3 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="bg-[#E05A2B] p-1.5 rounded-lg flex-shrink-0"><Calendar className="w-4 h-4 text-white" /></div>
+            <span className="font-bold text-slate-900 text-sm truncate">BCN Rooms</span>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => { setForm(emptyForm); setEditingId(null); setShowForm(true); }} className="flex items-center gap-1.5 bg-[#E05A2B] text-white px-3 py-2 rounded-xl text-xs font-semibold">
-              <Plus className="w-3.5 h-3.5" /> Nueva
+          <div className="flex items-center gap-1">
+            <button onClick={() => { setForm(emptyForm); setEditingId(null); setFormError(''); setShowForm(true); }}
+              className="flex items-center gap-1.5 bg-[#E05A2B] text-white px-3 h-11 rounded-xl text-xs font-semibold active:scale-95 transition-transform">
+              <Plus className="w-4 h-4" /> Nueva
             </button>
-            <button onClick={enablePush} className={`p-2 rounded-xl ${pushEnabled ? 'text-emerald-500 bg-emerald-50' : 'text-slate-400 hover:bg-slate-100'}`}>
+            <IconButton onClick={enablePush} title="Notificaciones"
+              className={pushEnabled ? 'text-emerald-500 bg-emerald-50' : 'text-slate-400'}>
               {pushEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
-            </button>
-            <button onClick={handleLogout} className="p-2 text-slate-400 rounded-xl hover:bg-slate-100"><LogOut className="w-4 h-4" /></button>
+            </IconButton>
+            <IconButton onClick={handleLogout} title="Salir" className="text-slate-400">
+              <LogOut className="w-4 h-4" />
+            </IconButton>
           </div>
         </div>
       </header>
 
       <div className="px-4 pt-4 pb-2 grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { l: 'Reservas', v: reservations.length, c: 'text-slate-900' },
+          { l: 'Reservas', v: activas.length, c: 'text-slate-900' },
           { l: 'Activas', v: activeNow, c: 'text-emerald-600' },
           { l: 'Pendiente', v: `${totalPending.toFixed(0)}€`, c: 'text-[#E05A2B]' },
           { l: 'Cobrado', v: `${totalCobrado.toFixed(0)}€`, c: 'text-emerald-600' },
@@ -709,29 +1037,36 @@ export function AdminPanel() {
 
       <div className="px-4 py-3">
 
-        {/* TODAY */}
+        {/* HOY */}
         {activeTab === 'today' && (() => {
-          const checkinsHoy = reservations.filter(r => r.check_in === today);
-          const checkoutsHoy = reservations.filter(r => r.check_out === today);
-          const urgentePago = reservations.filter(r => ((r.price_total || 0) - (r.price_paid || 0)) > 0 && r.check_in <= today)
-            .sort((a, b) => ((b.price_total || 0) - (b.price_paid || 0)) - ((a.price_total || 0) - (a.price_paid || 0)));
+          const checkinsHoy = activas.filter(r => r.check_in === today);
+          const checkoutsHoy = activas.filter(r => r.check_out === today);
+          const urgentePago = activas.filter(r => pendienteDe(r) > 0 && r.check_in <= today && !esMensual(r))
+            .sort((a, b) => pendienteDe(b) - pendienteDe(a));
+          const rentasVencidas = mensualidadesPendientes.filter(p => p.period_start <= today);
           return (
             <div className="space-y-4">
               <div className="bg-white rounded-2xl border border-slate-100 p-4">
                 <h3 className="font-semibold text-slate-900 text-sm mb-3">Estado de habitaciones</h3>
                 <div className="space-y-2">
                   {ALL_ROOMS.map(room => {
-                    const resActiva = reservations.find(r => r.room_id === room.id && r.check_in <= today && r.check_out > today);
-                    const checkinHoy = reservations.find(r => r.room_id === room.id && r.check_in === today);
-                    const checkoutHoy = reservations.find(r => r.room_id === room.id && r.check_out === today);
+                    const resActiva = activas.find(r => r.room_id === room.id && r.check_in <= today && r.check_out > today);
+                    const checkinHoy = activas.find(r => r.room_id === room.id && r.check_in === today);
+                    const checkoutHoy = activas.find(r => r.room_id === room.id && r.check_out === today);
                     const prop = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
                     let badge = { text: 'Libre', bg: 'bg-emerald-100', color: 'text-emerald-700' };
                     let icon = <CheckCircle className="w-4 h-4 text-emerald-500" />;
                     if (checkinHoy) { badge = { text: `Check-in · ${checkinHoy.guest_name}`, bg: 'bg-blue-100', color: 'text-blue-700' }; icon = <AlertCircle className="w-4 h-4 text-blue-500" />; }
                     else if (checkoutHoy) { badge = { text: `Check-out · ${checkoutHoy.guest_name}`, bg: 'bg-yellow-100', color: 'text-yellow-700' }; icon = <Clock className="w-4 h-4 text-yellow-500" />; }
-                    else if (resActiva) { badge = { text: `Ocupada · ${resActiva.guest_name}`, bg: 'bg-red-100', color: 'text-red-600' }; icon = <AlertCircle className="w-4 h-4 text-red-400" />; }
+                    else if (resActiva) {
+                      badge = esMensual(resActiva)
+                        ? { text: `Mensual · ${resActiva.guest_name}`, bg: 'bg-indigo-100', color: 'text-indigo-700' }
+                        : { text: `Ocupada · ${resActiva.guest_name}`, bg: 'bg-red-100', color: 'text-red-600' };
+                      icon = esMensual(resActiva) ? <KeyRound className="w-4 h-4 text-indigo-400" /> : <AlertCircle className="w-4 h-4 text-red-400" />;
+                    }
                     return (
-                      <div key={room.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => resActiva && setSelectedRes(resActiva)}>
+                      <div key={room.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer"
+                        onClick={() => resActiva && setSelectedRes(resActiva)}>
                         <div className="w-2 h-8 rounded-full flex-shrink-0" style={{ background: prop?.color || '#999' }} />
                         <div className="flex-1 min-w-0">
                           <p className="text-xs font-semibold text-slate-700">{room.name}</p>
@@ -743,6 +1078,31 @@ export function AdminPanel() {
                   })}
                 </div>
               </div>
+
+              {rentasVencidas.length > 0 && (
+                <div className="bg-white rounded-2xl border border-indigo-100 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <KeyRound className="w-4 h-4 text-indigo-500" />
+                    <h3 className="font-semibold text-slate-900 text-sm">Mensualidades por cobrar ({rentasVencidas.length})</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {rentasVencidas.map(p => (
+                      <div key={p.id} className="flex items-center gap-3 p-3 bg-indigo-50 rounded-xl">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-slate-900 truncate">{p.guest_name}</p>
+                          <p className="text-xs text-slate-500">{p.room_name} · {fmtMesCorto(p.period_start)}</p>
+                        </div>
+                        <span className="text-sm font-bold text-indigo-600 flex-shrink-0">{p.amount.toFixed(0)}€</span>
+                        <button onClick={() => { setRentModal(p); setRentMethod('Efectivo'); setRentAmount(String(p.amount)); }}
+                          className="flex-shrink-0 h-11 px-3 rounded-xl bg-indigo-500 text-white text-xs font-semibold active:scale-95 transition-transform">
+                          Cobrar
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {checkinsHoy.length > 0 && (
                 <div className="bg-white rounded-2xl border border-blue-100 p-4">
                   <div className="flex items-center gap-2 mb-3"><AlertCircle className="w-4 h-4 text-blue-500" /><h3 className="font-semibold text-slate-900 text-sm">Check-in hoy ({checkinsHoy.length})</h3></div>
@@ -754,22 +1114,23 @@ export function AdminPanel() {
                           <div className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-slate-900">{r.guest_name}</p>
-                            <p className="text-xs text-slate-500">{room?.name} · {calcNights(r.check_in, r.check_out)} noches · {r.num_persons} pers.</p>
+                            <p className="text-xs text-slate-500">{room?.name} · {esMensual(r) ? 'renta mensual' : `${calcNights(r.check_in, r.check_out)} noches`} · {r.num_persons} pers.</p>
                           </div>
-                          <span className="text-xs font-bold text-slate-700">{r.price_total || 0}€</span>
+                          <span className="text-xs font-bold text-slate-700">{(r.price_total || 0).toFixed(0)}€</span>
                         </div>
                       );
                     })}
                   </div>
                 </div>
               )}
+
               {checkoutsHoy.length > 0 && (
                 <div className="bg-white rounded-2xl border border-yellow-100 p-4">
                   <div className="flex items-center gap-2 mb-3"><Clock className="w-4 h-4 text-yellow-500" /><h3 className="font-semibold text-slate-900 text-sm">Check-out hoy ({checkoutsHoy.length})</h3></div>
                   <div className="space-y-2">
                     {checkoutsHoy.map(r => {
                       const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
-                      const pending = (r.price_total || 0) - (r.price_paid || 0);
+                      const pending = pendienteDe(r);
                       return (
                         <div key={r.id} className="flex items-center gap-3 p-3 bg-yellow-50 rounded-xl cursor-pointer" onClick={() => setSelectedRes(r)}>
                           <div className="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0" />
@@ -784,27 +1145,28 @@ export function AdminPanel() {
                   </div>
                 </div>
               )}
+
               {urgentePago.length > 0 && (
                 <div className="bg-white rounded-2xl border border-orange-100 p-4">
                   <div className="flex items-center gap-2 mb-3"><AlertCircle className="w-4 h-4 text-[#E05A2B]" /><h3 className="font-semibold text-slate-900 text-sm">Cobros pendientes ({urgentePago.length})</h3></div>
                   <div className="space-y-2">
-                    {urgentePago.slice(0, 5).map(r => {
-                      const pending = (r.price_total || 0) - (r.price_paid || 0);
+                    {urgentePago.slice(0, 6).map(r => {
                       const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
                       return (
                         <div key={r.id} className="flex items-center gap-3 p-3 bg-orange-50 rounded-xl cursor-pointer" onClick={() => setSelectedRes(r)}>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-slate-900">{r.guest_name}</p>
-                            <p className="text-xs text-slate-500">{room?.propertyName} · {r.payment_method || 'Efectivo'}</p>
+                            <p className="text-xs text-slate-500">{room?.propertyName} · {fmtDate(r.check_in)}</p>
                           </div>
-                          <span className="text-sm font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span>
+                          <span className="text-sm font-bold text-[#E05A2B]">{pendienteDe(r).toFixed(0)}€</span>
                         </div>
                       );
                     })}
                   </div>
                 </div>
               )}
-              {checkinsHoy.length === 0 && checkoutsHoy.length === 0 && urgentePago.length === 0 && (
+
+              {checkinsHoy.length === 0 && checkoutsHoy.length === 0 && urgentePago.length === 0 && rentasVencidas.length === 0 && (
                 <div className="bg-white rounded-2xl border border-slate-100 p-6 text-center">
                   <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
                   <p className="text-slate-500 text-sm">Todo tranquilo hoy</p>
@@ -814,94 +1176,156 @@ export function AdminPanel() {
           );
         })()}
 
-        {/* LIST */}
-        {activeTab === 'list' && (
-          <div className="space-y-3">
-            {sorted.length === 0 && (
-              <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center">
-                <p className="text-slate-400 text-sm mb-3">Sin reservas aún</p>
-                <button onClick={() => setShowForm(true)} className="text-[#E05A2B] text-sm font-medium">+ Añadir primera reserva</button>
+        {/* CALCULADORA DE NOCHES */}
+        {activeTab === 'calc' && (() => {
+          const noches = calcNights(calcIn, calcOut);
+          const ppn = parseFloat(calcPPN) || 0;
+          const total = noches > 0 && ppn > 0 ? noches * ppn : 0;
+          const mover = (dias: number) => setCalcOut(localDateStr(addDays(parseYMD(calcOut), dias)));
+          const desdeHoy = () => {
+            const hoy = localDateStr(new Date());
+            setCalcIn(hoy); setCalcOut(localDateStr(addDays(new Date(), Math.max(1, noches || 1))));
+          };
+          return (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-slate-100 p-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <Calculator className="w-4 h-4 text-[#E05A2B]" />
+                  <h3 className="font-semibold text-slate-900 text-sm">Calculadora de noches</h3>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Entrada</label>
+                    <input type="date" value={calcIn} onChange={e => setCalcIn(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Salida</label>
+                    <input type="date" value={calcOut} onChange={e => setCalcOut(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <button onClick={desdeHoy} className="h-11 px-3 rounded-xl text-xs font-medium border border-slate-200 bg-white text-slate-600 active:scale-95 transition-transform">Desde hoy</button>
+                  {[1, 2, 3, 7].map(d => (
+                    <button key={d} onClick={() => mover(d)}
+                      className="h-11 px-3 rounded-xl text-xs font-medium border border-slate-200 bg-white text-slate-600 active:scale-95 transition-transform">
+                      +{d === 7 ? '1 sem' : `${d}n`}
+                    </button>
+                  ))}
+                  <button onClick={() => mover(-1)}
+                    className="h-11 px-3 rounded-xl text-xs font-medium border border-slate-200 bg-white text-slate-600 active:scale-95 transition-transform">−1n</button>
+                </div>
+
+                <div className="bg-[#E05A2B] rounded-2xl p-5 text-center">
+                  <p className="text-white/70 text-xs mb-1">
+                    {noches > 0 ? `${fmtDateLargo(calcIn)} → ${fmtDateLargo(calcOut)}` : 'Elige las dos fechas'}
+                  </p>
+                  <p className="text-white text-4xl font-bold">
+                    {noches > 0 ? noches : '—'}
+                    <span className="text-lg font-medium ml-1.5">{noches === 1 ? 'noche' : 'noches'}</span>
+                  </p>
+                  {noches <= 0 && calcIn && calcOut && (
+                    <p className="text-white/80 text-[11px] mt-1">La salida tiene que ser posterior a la entrada</p>
+                  )}
+                </div>
               </div>
-            )}
-            {sorted.map(r => {
-              const room = ALL_ROOMS.find(rm => rm.id === r.room_id);
-              const pending = (r.price_total || 0) - (r.price_paid || 0);
-              const isActive = r.check_in <= today && r.check_out >= today;
-              const isPast = r.check_out < today;
-              const isPaid = pending <= 0 && (r.price_total || 0) > 0;
-              return (
-                <motion.div key={r.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                  className={`bg-white rounded-2xl border p-4 cursor-pointer ${isPast ? 'opacity-60 border-slate-100' : 'border-slate-100'}`}
-                  onClick={() => setSelectedRes(r)}>
-                  <div className="flex items-start gap-3">
-                    <div className="w-1 self-stretch rounded-full flex-shrink-0" style={{ background: room?.color || '#999' }} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-slate-900 text-sm">{r.guest_name}</span>
-                          {isActive && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">Activo</span>}
-                          {isPast && <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Pasado</span>}
-                          {isPaid && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">✓ Pagado</span>}
-                          {isManaged(r.room_id) && (
-                            r.settled_at
-                              ? <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">✓ Comisión cobrada</span>
-                              : <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Comisión pendiente</span>
-                          )}
-                        </div>
-                        <div className="flex gap-1 flex-shrink-0">
-                          <button onClick={e => { e.stopPropagation(); handleEdit(r); }} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
-                          <button onClick={e => { e.stopPropagation(); handleDelete(r.id); }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
-                        </div>
-                      </div>
-                      <p className="text-xs text-slate-400 mb-2">{room?.propertyName} · {room?.name}</p>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3 text-xs text-slate-500">
-                          <span>📅 {fmtDate(r.check_in)} → {fmtDate(r.check_out)}</span>
-                          <span>👥 {r.num_persons}</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-sm font-semibold text-slate-900">{r.price_total || 0}€</span>
-                          {pending > 0 && <span className="text-xs text-[#E05A2B] ml-1">−{pending.toFixed(0)}€</span>}
-                        </div>
-                      </div>
+
+              <div className="bg-white rounded-2xl border border-slate-100 p-4">
+                <h3 className="font-semibold text-slate-900 text-sm mb-3">Precio</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-slate-500 mb-1 block">€ por noche</label>
+                    <input type="number" inputMode="decimal" value={calcPPN} onChange={e => setCalcPPN(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 mb-1 block">Total</label>
+                    <div className="border border-[#E05A2B]/40 rounded-xl px-3 py-3 text-lg bg-orange-50 text-[#E05A2B] font-bold text-center">
+                      {total > 0 ? `${total.toFixed(0)}€` : '—'}
                     </div>
                   </div>
-                </motion.div>
-              );
-            })}
-          </div>
-        )}
+                </div>
+                {total > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {[30, 50, 70].map(p => (
+                      <div key={p} className="flex-1 min-w-[90px] bg-slate-50 rounded-xl px-3 py-2 text-center">
+                        <p className="text-[10px] text-slate-400">Señal {p}%</p>
+                        <p className="text-sm font-bold text-slate-700">{(total * p / 100).toFixed(0)}€</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {noches > 0 && (
+                  <button
+                    onClick={() => {
+                      setForm({ ...emptyForm, check_in: calcIn, check_out: calcOut, price_per_night: calcPPN, price_total: total > 0 ? total.toFixed(2) : '' });
+                      setSelectedProperty('sagrera'); setEditingId(null); setFormError(''); setShowForm(true);
+                    }}
+                    className="w-full mt-4 h-12 bg-slate-900 text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-transform">
+                    Crear reserva con estos datos
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
-        {/* CALENDAR — scroll horizontal libre, columna de habitaciones fija */}
+        {/* CALENDARIO */}
         {activeTab === 'calendar' && (
           <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-3 border-b border-slate-100">
-              <div className="min-w-0">
+            <div className="flex items-center justify-between gap-2 px-2 py-2 border-b border-slate-100">
+              <IconButton onClick={verMasPasado} title="Ver fechas anteriores" className="text-slate-500 bg-slate-50">
+                <ChevronLeft className="w-4 h-4" />
+              </IconButton>
+              <div className="min-w-0 flex-1 text-center">
                 <span className="text-sm font-semibold text-slate-800 capitalize">{calMesVisible || '—'}</span>
-                <p className="text-[10px] text-slate-400">Desliza a los lados para moverte por las fechas</p>
+                <p className="text-[10px] text-slate-400">Desliza para avanzar · flecha para retroceder</p>
               </div>
-              <button onClick={() => scrollHastaHoy()} className="flex-shrink-0 text-xs px-3 py-1.5 bg-[#E05A2B] text-white rounded-lg font-medium">
-                Ir a hoy
+              <button onClick={() => scrollHastaHoy()}
+                className="flex-shrink-0 h-11 px-3 bg-[#E05A2B] text-white rounded-xl text-xs font-semibold active:scale-95 transition-transform">
+                Hoy
               </button>
             </div>
-            <div
-              ref={calScrollRef}
-              className="overflow-x-auto overscroll-x-contain"
-              style={{ WebkitOverflowScrolling: 'touch' }}>
+
+            <div ref={calScrollRef} className="overflow-x-auto overscroll-x-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
               <div style={{ width: LABEL_W + COL_W * days.length }}>
 
-                {/* Cabecera de días */}
+                {/* Banda de meses: cada mes ocupa el ancho de sus días */}
+                <div className="flex border-b-2 border-slate-200">
+                  <div style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '3px 0 5px -3px rgba(15,23,42,0.15)' }}
+                    className="sticky left-0 z-30 bg-white border-r border-slate-200" />
+                  {tramosMes.map((t, i) => (
+                    <div key={t.key}
+                      style={{ width: COL_W * t.count, minWidth: COL_W * t.count, background: i % 2 === 0 ? '#F8FAFC' : '#EEF2F7' }}
+                      className="py-1.5 border-r-2 border-slate-300 overflow-hidden">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 px-2 whitespace-nowrap capitalize">
+                        {t.label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Días */}
                 <div className="flex border-b border-slate-100">
-                  <div
-                    style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '2px 0 4px -2px rgba(15,23,42,0.10)' }}
-                    className="sticky left-0 z-30 bg-white border-r border-slate-100" />
+                  <div style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '3px 0 5px -3px rgba(15,23,42,0.15)' }}
+                    className="sticky left-0 z-30 bg-white border-r border-slate-200" />
                   {days.map((d, i) => {
                     const ds = toDateStr(d), isToday = ds === today, isWE = d.getDay() === 0 || d.getDay() === 6;
+                    const primeroDeMes = d.getDate() === 1;
+                    const parImpar = indiceDeMes[`${d.getFullYear()}-${d.getMonth()}`] % 2 === 0;
                     return (
-                      <div key={i} style={{ width: COL_W, minWidth: COL_W }} className={`text-center py-1.5 border-r border-slate-100 ${isToday ? 'bg-orange-50' : isWE ? 'bg-slate-50' : ''}`}>
+                      <div key={i}
+                        style={{
+                          width: COL_W, minWidth: COL_W,
+                          borderLeft: primeroDeMes ? '2px solid #94A3B8' : undefined,
+                          background: isToday ? '#FFF7ED' : isWE ? (parImpar ? '#F1F5F9' : '#E7ECF3') : (parImpar ? '#FFFFFF' : '#F8FAFC'),
+                        }}
+                        className="text-center py-1.5 border-r border-slate-100">
                         <div className="text-[9px] text-slate-400 uppercase">{d.toLocaleDateString('es-ES', { weekday: 'short' })}</div>
                         <div className={`text-xs font-bold ${isToday ? 'text-[#E05A2B]' : 'text-slate-700'}`}>{d.getDate()}</div>
-                        {d.getDate() === 1 && <div className="text-[8px] text-slate-400 capitalize">{d.toLocaleDateString('es-ES', { month: 'short' })}</div>}
                       </div>
                     );
                   })}
@@ -910,41 +1334,48 @@ export function AdminPanel() {
                 {PROPERTIES.map(prop => (
                   <div key={prop.id}>
                     <div className="flex items-center border-b border-slate-100" style={{ background: prop.light }}>
-                      <div
-                        style={{ width: LABEL_W, minWidth: LABEL_W, background: prop.light, boxShadow: '2px 0 4px -2px rgba(15,23,42,0.10)' }}
-                        className="sticky left-0 z-30 px-3 py-1.5 border-r border-slate-100">
+                      <div style={{ width: LABEL_W, minWidth: LABEL_W, background: prop.light, boxShadow: '3px 0 5px -3px rgba(15,23,42,0.15)' }}
+                        className="sticky left-0 z-30 px-3 py-1.5 border-r border-slate-200">
                         <span className="text-[10px] font-bold uppercase tracking-wide" style={{ color: prop.color }}>{prop.name}</span>
                       </div>
                       <div className="flex-1" style={{ height: 24 }} />
                     </div>
                     {prop.rooms.map(room => {
-                      const visibleRes = reservations.filter(r => r.room_id === room.id && r.check_in <= toDateStr(days[days.length-1]) && r.check_out >= toDateStr(days[0]));
+                      const visibleRes = activas.filter(r => r.room_id === room.id && r.check_in <= toDateStr(days[days.length-1]) && r.check_out >= toDateStr(days[0]));
                       return (
                         <div key={room.id} className="flex border-b border-slate-100 relative" style={{ height: ROW_H }}>
-                          <div
-                            style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '2px 0 4px -2px rgba(15,23,42,0.10)' }}
-                            className="sticky left-0 z-30 flex items-center px-3 border-r border-slate-100 bg-white">
-                            <div>
-                              <p className="text-[11px] font-medium text-slate-700">{room.name}</p>
-                              <p className="text-[9px] text-slate-400">{room.type === 'double' ? 'Doble' : 'Mediana'}</p>
+                          <div style={{ width: LABEL_W, minWidth: LABEL_W, boxShadow: '3px 0 5px -3px rgba(15,23,42,0.15)' }}
+                            className="sticky left-0 z-30 flex items-center px-3 border-r border-slate-200 bg-white">
+                            <div className="min-w-0">
+                              <p className="text-[11px] font-medium text-slate-700 truncate">{room.name}</p>
+                              <p className="text-[9px] text-slate-400">
+                                {room.type === 'double' ? 'Doble' : 'Mediana'}
+                                {admiteMensual(room.id) && <span className="text-indigo-400"> · mensual</span>}
+                              </p>
                             </div>
                           </div>
                           <div className="relative flex-1">
                             <div className="absolute inset-0 flex">
                               {days.map((d, i) => {
                                 const ds = toDateStr(d), isToday = ds === today, isWE = d.getDay() === 0 || d.getDay() === 6;
-                                const hasRes = reservations.some(r => r.room_id === room.id && r.check_in <= ds && r.check_out >= ds);
+                                const primeroDeMes = d.getDate() === 1;
+                                const parImpar = indiceDeMes[`${d.getFullYear()}-${d.getMonth()}`] % 2 === 0;
+                                const hasRes = activas.some(r => r.room_id === room.id && r.check_in <= ds && r.check_out >= ds);
                                 return (
-                                  <div key={i} style={{ width: COL_W, minWidth: COL_W }}
-                                    onClick={() => {
-                                      if (!hasRes) {
-                                        const p = PROPERTIES.find(p => p.rooms.some(r => r.id === room.id));
-                                        if (p) setSelectedProperty(p.id);
-                                        setForm({ ...emptyForm, room_id: room.id, check_in: ds });
-                                        setEditingId(null); setShowForm(true);
-                                      }
+                                  <div key={i}
+                                    style={{
+                                      width: COL_W, minWidth: COL_W,
+                                      borderLeft: primeroDeMes ? '2px solid #94A3B8' : undefined,
+                                      background: isToday ? 'rgba(255,237,213,0.5)' : isWE ? (parImpar ? 'rgba(241,245,249,0.6)' : 'rgba(226,232,240,0.6)') : (parImpar ? undefined : 'rgba(248,250,252,0.9)'),
                                     }}
-                                    className={`h-full border-r border-slate-100 group ${!hasRes ? 'cursor-pointer hover:bg-blue-50/40' : ''} ${isToday ? 'bg-orange-50/50' : isWE ? 'bg-slate-50/30' : ''}`}>
+                                    onClick={() => {
+                                      if (hasRes) return;
+                                      const p = PROPERTIES.find(pr => pr.rooms.some(r => r.id === room.id));
+                                      if (p) setSelectedProperty(p.id);
+                                      setForm({ ...emptyForm, room_id: room.id, check_in: ds, check_out: toDateStr(addDays(parseYMD(ds), 1)) });
+                                      setEditingId(null); setFormError(''); setShowForm(true);
+                                    }}
+                                    className={`h-full border-r border-slate-100 group ${!hasRes ? 'cursor-pointer active:bg-blue-100' : ''}`}>
                                     {!hasRes && <div className="h-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-[10px] text-slate-400">+</span></div>}
                                   </div>
                                 );
@@ -953,9 +1384,9 @@ export function AdminPanel() {
                             {visibleRes.map(res => {
                               const bar = getResBar(res);
                               if (!bar) return null;
-                              const pending = (res.price_total || 0) - (res.price_paid || 0);
+                              const pending = pendienteDe(res);
                               const isPaid = pending <= 0 && (res.price_total || 0) > 0;
-                              // El diente solo existe si hay reserva vecina ese día (lo decide getResBar).
+                              const mensual = esMensual(res);
                               const tooth = COL_W * 0.5;
                               const { clipStart, clipEnd } = bar;
                               const clipPath = (clipStart || clipEnd)
@@ -963,11 +1394,14 @@ export function AdminPanel() {
                                 : undefined;
                               return (
                                 <button key={res.id} onClick={() => setSelectedRes(res)}
-                                  className="absolute top-1.5 bottom-1.5 flex items-center gap-1 text-white text-[11px] font-medium shadow-sm hover:opacity-90 truncate"
+                                  className="absolute top-1.5 bottom-1.5 flex items-center gap-1 text-white text-[11px] font-medium shadow-sm active:opacity-80 truncate"
                                   style={{
                                     left: bar.left + (clipStart ? 0 : 2),
                                     width: bar.width - (clipStart ? 0 : 2) - (clipEnd ? 0 : 2),
-                                    background: prop.color,
+                                    background: mensual ? '#6366F1' : prop.color,
+                                    backgroundImage: mensual
+                                      ? 'repeating-linear-gradient(45deg, rgba(255,255,255,0.10) 0 8px, transparent 8px 16px)'
+                                      : undefined,
                                     zIndex: 10,
                                     clipPath,
                                     borderRadius: 8,
@@ -975,7 +1409,9 @@ export function AdminPanel() {
                                     paddingRight: clipEnd ? tooth + 4 : 8,
                                   }}>
                                   <span className="truncate">{res.guest_name}</span>
-                                  {isPaid
+                                  {mensual
+                                    ? <span className="flex-shrink-0 bg-white/25 rounded px-1 text-[9px]">mes</span>
+                                    : isPaid
                                     ? <span className="flex-shrink-0 bg-white/30 rounded px-1 text-[9px]">✓</span>
                                     : <span className="flex-shrink-0 bg-white/25 rounded px-1 text-[9px]">{pending.toFixed(0)}€</span>}
                                 </button>
@@ -989,121 +1425,120 @@ export function AdminPanel() {
                 ))}
               </div>
             </div>
+
+            <div className="flex items-center gap-3 px-4 py-2.5 border-t border-slate-100 text-[10px] text-slate-400 flex-wrap">
+              <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-sm bg-[#10B981]" /> por noches</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-sm bg-indigo-500" /> renta mensual</span>
+              <span>· toca un hueco libre para reservar</span>
+            </div>
           </div>
         )}
 
-        {/* EXPENSES */}
+        {/* GASTOS */}
         {activeTab === 'expenses' && (() => {
           const pendientesReembolso = expenses.filter(e => e.own_money && !e.reimbursed_at);
           return (
-          <div className="space-y-4">
-            {PROPERTIES.map(prop => {
-              const propIncome = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id)).reduce((a, r) => a + (r.price_paid || 0), 0);
-              const propCost = expenses.filter(e => e.property_id === prop.id).reduce((a, e) => a + e.amount, 0);
-              const neto = propIncome - propCost;
-              return (
-                <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-3 h-3 rounded-full" style={{ background: prop.color }} />
-                    <h3 className="font-semibold text-slate-900 text-sm">{prop.name}</h3>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Ingresos</p><p className="text-sm font-bold text-emerald-600">{propIncome}€</p></div>
-                    <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Gastos</p><p className="text-sm font-bold text-red-500">{propCost}€</p></div>
-                    <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Neto</p><p className={`text-sm font-bold ${neto >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{neto}€</p></div>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Dinero adelantado por Alvaro o Jeffer */}
-            {pendientesReembolso.length > 0 && (
-              <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
-                <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
-                  <span className="text-xs font-bold uppercase tracking-wide text-amber-700">
-                    Por devolver ({pendientesReembolso.length})
-                  </span>
-                  <p className="text-[10px] text-amber-600/80 mt-0.5">
-                    Lo pagaron de su bolsillo. Hasta que se devuelve, no sale de la caja.
-                  </p>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {pendientesReembolso.map(ex => (
-                    <div key={ex.id} className="flex items-center gap-3 p-4">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
-                        <p className="text-[10px] text-slate-400">{ex.paid_by || 'Sin asignar'} · {ex.category} · {fmtDate(ex.date)}</p>
-                      </div>
-                      <span className="text-sm font-bold text-amber-600 flex-shrink-0">{ex.amount}€</span>
-                      <button onClick={() => handleReembolso(ex.id)}
-                        className="flex-shrink-0 text-[11px] px-3 py-1.5 rounded-lg bg-emerald-500 text-white font-medium hover:bg-emerald-600 transition-colors">
-                        Devuelto
-                      </button>
+            <div className="space-y-4">
+              {PROPERTIES.map(prop => {
+                const propIncome = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id)).reduce((a, r) => a + (r.price_paid || 0), 0);
+                const propCost = expenses.filter(e => e.property_id === prop.id).reduce((a, e) => a + e.amount, 0);
+                const neto = propIncome - propCost;
+                return (
+                  <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-3 h-3 rounded-full" style={{ background: prop.color }} />
+                      <h3 className="font-semibold text-slate-900 text-sm">{prop.name}</h3>
                     </div>
-                  ))}
-                  <div className="flex justify-between px-4 py-2.5 bg-amber-50/60">
-                    <span className="text-xs text-amber-700 font-medium">Total por devolver</span>
-                    <span className="text-xs font-bold text-amber-700">{pendientesReembolso.reduce((a, e) => a + e.amount, 0)}€</span>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Ingresos</p><p className="text-sm font-bold text-emerald-600">{propIncome.toFixed(0)}€</p></div>
+                      <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Gastos</p><p className="text-sm font-bold text-red-500">{propCost.toFixed(0)}€</p></div>
+                      <div className="bg-slate-50 rounded-xl p-2.5 text-center"><p className="text-[10px] text-slate-400">Neto</p><p className={`text-sm font-bold ${neto >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{neto.toFixed(0)}€</p></div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
+                );
+              })}
 
-            <button onClick={() => { setExpenseForm(emptyExpenseForm); setEditingExpenseId(null); setShowExpenseForm(true); }}
-              className="w-full flex items-center justify-center gap-2 py-3 bg-white border border-dashed border-slate-300 rounded-2xl text-sm text-slate-500 hover:border-[#E05A2B] hover:text-[#E05A2B] transition-colors">
-              <Plus className="w-4 h-4" /> Añadir gasto
-            </button>
-            {PROPERTIES.map(prop => {
-              const propExpenses = expenses.filter(e => e.property_id === prop.id);
-              if (propExpenses.length === 0) return null;
-              return (
-                <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-                  <div className="px-4 py-2.5 border-b border-slate-100" style={{ background: prop.light }}>
-                    <span className="text-xs font-bold uppercase tracking-wide" style={{ color: prop.color }}>{prop.name}</span>
+              {pendientesReembolso.length > 0 && (
+                <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
+                  <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+                    <span className="text-xs font-bold uppercase tracking-wide text-amber-700">Por devolver ({pendientesReembolso.length})</span>
+                    <p className="text-[10px] text-amber-600/80 mt-0.5">Lo pagaron de su bolsillo. Hasta que se devuelve, no sale de la caja.</p>
                   </div>
                   <div className="divide-y divide-slate-100">
-                    {propExpenses.map(ex => {
-                      const cj = cajaDeGasto(ex.property_id, ex.payment_method);
-                      const info = CAJAS_INFO.find(c => c.id === cj)!;
-                      return (
-                        <div key={ex.id} className="flex items-center gap-3 p-4">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                              <span className="text-xs text-slate-500">{ex.category}</span>
-                              <span className="text-[10px] text-slate-400">{fmtDate(ex.date)}</span>
-                              {ex.payment_method && (
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${info.bg} ${info.color}`}>
-                                  {ex.payment_method} · {info.icon} {info.label}
-                                </span>
-                              )}
-                              {ex.paid_by && (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{ex.paid_by}</span>
-                              )}
-                              {ex.own_money && (
-                                ex.reimbursed_at
-                                  ? <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Devuelto {fmtDate(ex.reimbursed_at)}</span>
-                                  : <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Por devolver</span>
-                              )}
-                            </div>
-                            <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
-                          </div>
-                          <span className="text-sm font-bold text-red-500 flex-shrink-0">−{ex.amount}€</span>
-                          <div className="flex gap-1 flex-shrink-0">
-                            <button onClick={() => handleExpenseEdit(ex)} className="p-1.5 text-slate-400 hover:text-[#E05A2B] hover:bg-orange-50 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleExpenseDelete(ex.id)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
-                          </div>
+                    {pendientesReembolso.map(ex => (
+                      <div key={ex.id} className="flex items-center gap-3 p-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
+                          <p className="text-[10px] text-slate-400">{ex.paid_by || 'Sin asignar'} · {ex.category} · {fmtDate(ex.date)}</p>
                         </div>
-                      );
-                    })}
-                    <div className="flex justify-between px-4 py-2.5 bg-slate-50">
-                      <span className="text-xs text-slate-500 font-medium">Total gastos</span>
-                      <span className="text-xs font-bold text-red-500">{propExpenses.reduce((a, e) => a + e.amount, 0)}€</span>
+                        <span className="text-sm font-bold text-amber-600 flex-shrink-0">{ex.amount.toFixed(0)}€</span>
+                        <button onClick={() => handleReembolso(ex.id)} disabled={busy}
+                          className="flex-shrink-0 h-11 px-3 rounded-xl bg-emerald-500 text-white text-xs font-semibold disabled:opacity-60 active:scale-95 transition-transform">
+                          Devuelto
+                        </button>
+                      </div>
+                    ))}
+                    <div className="flex justify-between px-4 py-2.5 bg-amber-50/60">
+                      <span className="text-xs text-amber-700 font-medium">Total por devolver</span>
+                      <span className="text-xs font-bold text-amber-700">{pendientesReembolso.reduce((a, e) => a + e.amount, 0).toFixed(0)}€</span>
                     </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              )}
+
+              <button onClick={() => { setExpenseForm(emptyExpenseForm); setEditingExpenseId(null); setShowExpenseForm(true); }}
+                className="w-full flex items-center justify-center gap-2 h-12 bg-white border border-dashed border-slate-300 rounded-2xl text-sm text-slate-500 active:scale-[0.98] transition-transform">
+                <Plus className="w-4 h-4" /> Añadir gasto
+              </button>
+
+              {PROPERTIES.map(prop => {
+                const propExpenses = expenses.filter(e => e.property_id === prop.id);
+                if (propExpenses.length === 0) return null;
+                return (
+                  <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+                    <div className="px-4 py-2.5 border-b border-slate-100" style={{ background: prop.light }}>
+                      <span className="text-xs font-bold uppercase tracking-wide" style={{ color: prop.color }}>{prop.name}</span>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {propExpenses.map(ex => {
+                        const info = CAJAS_INFO.find(c => c.id === cajaDeGasto(ex.property_id, ex.payment_method))!;
+                        return (
+                          <div key={ex.id} className="flex items-center gap-2 p-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                                <span className="text-xs text-slate-500">{ex.category}</span>
+                                <span className="text-[10px] text-slate-400">{fmtDate(ex.date)}</span>
+                                {ex.payment_method && (
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${info.bg} ${info.color}`}>{ex.payment_method}</span>
+                                )}
+                                {ex.paid_by && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{ex.paid_by}</span>}
+                                {ex.own_money && (
+                                  ex.reimbursed_at
+                                    ? <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Devuelto</span>
+                                    : <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Por devolver</span>
+                                )}
+                              </div>
+                              <p className="text-sm font-medium text-slate-900 truncate">{ex.description}</p>
+                            </div>
+                            <span className="text-sm font-bold text-red-500 flex-shrink-0">−{ex.amount.toFixed(0)}€</span>
+                            <IconButton onClick={() => handleExpenseEdit(ex)} title="Editar" className="text-slate-400 bg-slate-50">
+                              <Edit2 className="w-4 h-4" />
+                            </IconButton>
+                            <IconButton onClick={() => pedirBorrarGasto(ex)} title="Eliminar" className="text-red-400 bg-red-50">
+                              <Trash2 className="w-4 h-4" />
+                            </IconButton>
+                          </div>
+                        );
+                      })}
+                      <div className="flex justify-between px-4 py-2.5 bg-slate-50">
+                        <span className="text-xs text-slate-500 font-medium">Total gastos</span>
+                        <span className="text-xs font-bold text-red-500">{propExpenses.reduce((a, e) => a + e.amount, 0).toFixed(0)}€</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           );
         })()}
 
@@ -1114,70 +1549,17 @@ export function AdminPanel() {
               <h3 className="font-semibold text-slate-900 text-sm mb-4">Resumen financiero</h3>
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { l: 'Total facturado', v: `${reservations.reduce((a, r) => a + (r.price_total || 0), 0)}€`, c: 'text-slate-900' },
+                  { l: 'Total facturado', v: `${reservations.reduce((a, r) => a + (r.price_total || 0), 0).toFixed(0)}€`, c: 'text-slate-900' },
                   { l: 'Total cobrado', v: `${totalCobrado.toFixed(0)}€`, c: 'text-emerald-600' },
                   { l: 'Pendiente cobro', v: `${totalPending.toFixed(0)}€`, c: 'text-[#E05A2B]' },
-                  { l: 'Ticket medio', v: `${reservations.length ? (reservations.reduce((a, r) => a + (r.price_total || 0), 0) / reservations.length).toFixed(0) : 0}€`, c: 'text-slate-900' },
+                  { l: 'Ticket medio', v: `${activas.length ? (activas.reduce((a, r) => a + (r.price_total || 0), 0) / activas.length).toFixed(0) : 0}€`, c: 'text-slate-900' },
                 ].map(s => (
                   <div key={s.l} className="bg-slate-50 rounded-xl p-3"><p className="text-[10px] text-slate-400 mb-0.5">{s.l}</p><p className={`text-lg font-bold ${s.c}`}>{s.v}</p></div>
                 ))}
               </div>
             </div>
-            {PROPERTIES.map(prop => {
-              const propRes = reservations.filter(r => prop.rooms.some(rm => rm.id === r.room_id));
-              const propIncome = propRes.reduce((a, r) => a + (r.price_total || 0), 0);
-              const propPaid = propRes.reduce((a, r) => a + (r.price_paid || 0), 0);
-              const propPending = propIncome - propPaid;
-              const activeRes = propRes.filter(r => r.check_in <= today && r.check_out >= today);
-              const pct = reservations.length ? Math.round((propRes.length / reservations.length) * 100) : 0;
-              return (
-                <div key={prop.id} className="bg-white rounded-2xl border border-slate-100 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-3 h-3 rounded-full" style={{ background: prop.color }} />
-                    <h3 className="font-semibold text-slate-900 text-sm">{prop.name}</h3>
-                    <span className="text-[10px] text-slate-400 ml-auto">{prop.rooms.length} hab.</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 mb-3">
-                    {[{ l: 'Reservas', v: propRes.length, c: 'text-slate-900' }, { l: 'Activas', v: activeRes.length, c: 'text-emerald-600' }, { l: '% total', v: `${pct}%`, c: '' }].map(s => (
-                      <div key={s.l} className="bg-slate-50 rounded-xl p-2.5 text-center">
-                        <p className="text-[10px] text-slate-400">{s.l}</p>
-                        <p className={`text-base font-bold ${s.c}`} style={!s.c ? { color: prop.color } : {}}>{s.v}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
-                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: prop.color }} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-xs"><span className="text-slate-500">Facturado</span><span className="font-semibold">{propIncome}€</span></div>
-                    <div className="flex justify-between text-xs"><span className="text-slate-500">Cobrado</span><span className="font-semibold text-emerald-600">{propPaid}€</span></div>
-                    {propPending > 0 && <div className="flex justify-between text-xs border-t border-slate-100 pt-1.5"><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{propPending.toFixed(0)}€</span></div>}
-                  </div>
-                  {prop.rooms.length > 1 && (
-                    <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Por habitación</p>
-                      {prop.rooms.map(room => {
-                        const roomRes = reservations.filter(r => r.room_id === room.id);
-                        const roomIncome = roomRes.reduce((a, r) => a + (r.price_total || 0), 0);
-                        const roomPaid = roomRes.reduce((a, r) => a + (r.price_paid || 0), 0);
-                        const roomPending = roomIncome - roomPaid;
-                        return (
-                          <div key={room.id}>
-                            <div className="flex justify-between text-xs mb-1"><span className="text-slate-600 font-medium">{room.name}</span><span className="text-slate-500">{roomRes.length} res · {roomIncome}€</span></div>
-                            <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-                              <div className="h-full rounded-full" style={{ width: `${propRes.length ? (roomRes.length / propRes.length) * 100 : 0}%`, background: prop.color, opacity: 0.7 }} />
-                            </div>
-                            {roomPending > 0 && <p className="text-[10px] text-[#E05A2B] mt-0.5">Pendiente: {roomPending.toFixed(0)}€</p>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
 
-            {/* Balance por caja — acumulado histórico */}
+            {/* Balance por caja */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
               <h3 className="font-semibold text-slate-900 text-sm mb-1">💰 Balance por caja</h3>
               <p className="text-[11px] text-slate-400 mb-4">Acumulado desde el principio. El detalle mes a mes está en Cuadre.</p>
@@ -1189,7 +1571,6 @@ export function AdminPanel() {
                   else gastos[m.caja] += m.amount;
                 });
                 const total = CAJAS_INFO.reduce((a, c) => a + ingresos[c.id] - gastos[c.id], 0);
-
                 return (
                   <div className="space-y-3">
                     {CAJAS_INFO.map(c => {
@@ -1206,9 +1587,7 @@ export function AdminPanel() {
                           </div>
                           <div className={`flex justify-between text-sm border-t ${c.border} pt-2 mt-2`}>
                             <span className="font-semibold text-slate-700">Neto</span>
-                            <span className={`font-bold text-lg ${neto >= 0 ? c.color : 'text-red-500'}`}>
-                              {neto.toFixed(0)}€
-                            </span>
+                            <span className={`font-bold text-lg ${neto >= 0 ? c.color : 'text-red-500'}`}>{neto.toFixed(0)}€</span>
                           </div>
                         </div>
                       );
@@ -1222,17 +1601,47 @@ export function AdminPanel() {
               })()}
             </div>
 
-            {/* Comisiones de Sagrada Família */}
+            {/* Rentas mensuales */}
+            {rentPayments.length > 0 && (
+              <div className="bg-white rounded-2xl border border-slate-100 p-4">
+                <h3 className="font-semibold text-slate-900 text-sm mb-3">🔑 Rentas mensuales</h3>
+                {(() => {
+                  const cobradas = rentPayments.filter(p => p.paid_at);
+                  const totalCobradas = cobradas.reduce((a, p) => a + p.amount, 0);
+                  const totalPend = mensualidadesPendientes.reduce((a, p) => a + p.amount, 0);
+                  return (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-emerald-50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-400 mb-0.5">Cobrado</p>
+                          <p className="text-lg font-bold text-emerald-600">{totalCobradas.toFixed(0)}€</p>
+                        </div>
+                        <div className="bg-indigo-50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-400 mb-0.5">Por cobrar</p>
+                          <p className="text-lg font-bold text-indigo-600">{totalPend.toFixed(0)}€</p>
+                        </div>
+                      </div>
+                      {mensualidadesPendientes.slice(0, 8).map(p => (
+                        <div key={p.id} className="flex items-center gap-2 text-xs">
+                          <span className="text-slate-400 w-14 flex-shrink-0">{fmtMesCorto(p.period_start)}</span>
+                          <span className="flex-1 min-w-0 truncate text-slate-600">{p.guest_name} · {p.room_name}</span>
+                          <span className="font-semibold text-slate-700">{p.amount.toFixed(0)}€</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Comisiones Sagrada */}
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
               <h3 className="font-semibold text-slate-900 text-sm mb-4">🏠 Sagrada Família — Comisiones</h3>
               {(() => {
                 const gestionadas = reservations.filter(r => isManaged(r.room_id));
                 const pendiente = gestionadas.reduce((a, r) => a + comisionPendiente(r), 0);
-                const cobrado = gestionadas
-                  .filter(r => r.settled_at)
-                  .reduce((a, r) => a + (Number(r.commission_amount) || 0), 0);
+                const cobrado = gestionadas.filter(r => r.settled_at).reduce((a, r) => a + (Number(r.commission_amount) || 0), 0);
                 const nPend = gestionadas.filter(r => !r.settled_at).length;
-
                 return (
                   <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-3">
@@ -1245,36 +1654,27 @@ export function AdminPanel() {
                         <p className="text-lg font-bold text-purple-600">{pendiente.toFixed(0)}€</p>
                       </div>
                     </div>
-
                     {nPend > 0 && (
                       <>
-                        <div className="space-y-1">
+                        <div className="space-y-1.5">
                           {gestionadas.filter(r => !r.settled_at).map(r => (
-                            <div key={r.id} className="flex justify-between items-center text-xs px-1">
-                              <span className="text-slate-500">{r.guest_name}</span>
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium text-slate-700">
-                                  {(Number(r.commission_amount) || 0).toFixed(0)}€
-                                </span>
-                                <button
-                                  onClick={() => { setSettleTargetId(r.id); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
-                                  className="text-[10px] px-2 py-0.5 rounded-full border border-purple-200 text-purple-700 hover:bg-purple-50 transition-colors">
-                                  Liquidar
-                                </button>
-                              </div>
+                            <div key={r.id} className="flex justify-between items-center text-xs">
+                              <span className="text-slate-500 flex-1 min-w-0 truncate">{r.guest_name}</span>
+                              <span className="font-medium text-slate-700 mr-2">{(Number(r.commission_amount) || 0).toFixed(0)}€</span>
+                              <button onClick={() => { setSettleTargetId(r.id); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
+                                className="h-9 px-3 rounded-lg border border-purple-200 text-purple-700 text-[11px] font-medium active:scale-95 transition-transform">
+                                Liquidar
+                              </button>
                             </div>
                           ))}
                         </div>
-                        <button
-                          onClick={() => { setSettleTargetId(null); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
-                          className="w-full py-3 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-xl text-sm font-semibold transition-colors">
+                        <button onClick={() => { setSettleTargetId(null); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
+                          className="w-full h-12 bg-[#8B5CF6] text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-transform">
                           Registrar cobro de {pendiente.toFixed(0)}€
                         </button>
                       </>
                     )}
-                    {nPend === 0 && (
-                      <p className="text-xs text-slate-400 text-center py-2">Todas las comisiones están cobradas</p>
-                    )}
+                    {nPend === 0 && <p className="text-xs text-slate-400 text-center py-2">Todas las comisiones están cobradas</p>}
                   </div>
                 );
               })()}
@@ -1284,14 +1684,14 @@ export function AdminPanel() {
             <div className="bg-white rounded-2xl border border-slate-100 p-4">
               <h3 className="font-semibold text-slate-900 text-sm mb-4">Reservas por canal</h3>
               {CHANNELS.map(ch => {
-                const count = reservations.filter(r => r.channel === ch).length;
+                const count = activas.filter(r => r.channel === ch).length;
                 if (count === 0) return null;
-                const income = reservations.filter(r => r.channel === ch).reduce((a, r) => a + (r.price_total || 0), 0);
+                const income = activas.filter(r => r.channel === ch).reduce((a, r) => a + (r.price_total || 0), 0);
                 return (
                   <div key={ch} className="mb-3 last:mb-0">
-                    <div className="flex justify-between text-xs mb-1"><span className="text-slate-600 font-medium">{ch}</span><span className="text-slate-500">{count} · {income}€</span></div>
+                    <div className="flex justify-between text-xs mb-1"><span className="text-slate-600 font-medium">{ch}</span><span className="text-slate-500">{count} · {income.toFixed(0)}€</span></div>
                     <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-[#E05A2B] rounded-full" style={{ width: `${(count / reservations.length) * 100}%` }} />
+                      <div className="h-full bg-[#E05A2B] rounded-full" style={{ width: `${(count / Math.max(1, activas.length)) * 100}%` }} />
                     </div>
                   </div>
                 );
@@ -1300,7 +1700,7 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* CUADRE — balance mensual por caja, del día 01 al cierre */}
+        {/* CUADRE */}
         {activeTab === 'cuadre' && (() => {
           const previos = movimientos.filter(m => mesDe(m.date) < cuadreMes);
           const delMes = movimientos.filter(m => mesDe(m.date) === cuadreMes);
@@ -1320,26 +1720,21 @@ export function AdminPanel() {
 
           return (
             <div className="space-y-4">
-
-              {/* Selector de mes */}
               <div className="bg-white rounded-2xl border border-slate-100 flex items-center justify-between px-2 py-2">
-                <button onClick={() => setCuadreMes(m => sumarMeses(m, -1))} className="p-2 hover:bg-slate-100 rounded-xl">
-                  <ChevronLeft className="w-4 h-4 text-slate-500" />
-                </button>
+                <IconButton onClick={() => setCuadreMes(m => sumarMeses(m, -1))} title="Mes anterior" className="text-slate-500 bg-slate-50">
+                  <ChevronLeft className="w-4 h-4" />
+                </IconButton>
                 <div className="text-center">
                   <p className="text-sm font-semibold text-slate-800 capitalize">{fmtMes(cuadreMes)}</p>
                   {!esMesActual && (
-                    <button onClick={() => setCuadreMes(mesActualStr())} className="text-[10px] text-[#E05A2B] font-medium">
-                      Volver al mes actual
-                    </button>
+                    <button onClick={() => setCuadreMes(mesActualStr())} className="text-[10px] text-[#E05A2B] font-medium">Volver al mes actual</button>
                   )}
                 </div>
-                <button onClick={() => setCuadreMes(m => sumarMeses(m, 1))} className="p-2 hover:bg-slate-100 rounded-xl">
-                  <ChevronRight className="w-4 h-4 text-slate-500" />
-                </button>
+                <IconButton onClick={() => setCuadreMes(m => sumarMeses(m, 1))} title="Mes siguiente" className="text-slate-500 bg-slate-50">
+                  <ChevronRight className="w-4 h-4" />
+                </IconButton>
               </div>
 
-              {/* Resumen del mes */}
               <div className="bg-white rounded-2xl border border-slate-100 p-4">
                 <div className="grid grid-cols-3 gap-2">
                   <div className="bg-emerald-50 rounded-xl p-3 text-center">
@@ -1352,18 +1747,15 @@ export function AdminPanel() {
                   </div>
                   <div className="bg-slate-50 rounded-xl p-3 text-center">
                     <p className="text-[10px] text-slate-400">Neto</p>
-                    <p className={`text-base font-bold ${totalIn - totalOut >= 0 ? 'text-slate-900' : 'text-red-500'}`}>
-                      {(totalIn - totalOut).toFixed(0)}€
-                    </p>
+                    <p className={`text-base font-bold ${totalIn - totalOut >= 0 ? 'text-slate-900' : 'text-red-500'}`}>{(totalIn - totalOut).toFixed(0)}€</p>
                   </div>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-3">
                   Del 1 al último día del mes. Los pagos de reserva cuentan el día que se creó la reserva,
-                  los pagos al ingresar el día del check-in, y las comisiones de Sagrada el día que se liquidaron.
+                  los pagos al ingresar el día del check-in, las mensualidades y las comisiones el día que se cobraron.
                 </p>
               </div>
 
-              {/* Una tarjeta por caja */}
               {CAJAS_INFO.map(c => {
                 const ingresos = delMes.filter(m => m.caja === c.id && m.tipo === 'in');
                 const gastos = delMes.filter(m => m.caja === c.id && m.tipo === 'out');
@@ -1378,9 +1770,7 @@ export function AdminPanel() {
                   <div key={c.id} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
                     <div className={`flex items-center justify-between px-4 py-3 ${c.bg} border-b ${c.border}`}>
                       <span className="text-sm font-semibold text-slate-800">{c.icon} {c.label}</span>
-                      <span className={`text-sm font-bold ${neto >= 0 ? c.color : 'text-red-500'}`}>
-                        {neto >= 0 ? '+' : ''}{neto.toFixed(0)}€
-                      </span>
+                      <span className={`text-sm font-bold ${neto >= 0 ? c.color : 'text-red-500'}`}>{neto >= 0 ? '+' : ''}{neto.toFixed(0)}€</span>
                     </div>
 
                     <div className="px-4 py-3 flex justify-between text-xs border-b border-slate-100">
@@ -1388,11 +1778,8 @@ export function AdminPanel() {
                       <span className="font-semibold text-slate-700">{saldoInicial[c.id].toFixed(0)}€</span>
                     </div>
 
-                    {/* Ingresos, uno por persona */}
                     <div className="px-4 pt-3">
-                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">
-                        Ingresos ({ingresos.length})
-                      </p>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Ingresos ({ingresos.length})</p>
                       {ingresos.length === 0 && <p className="text-xs text-slate-400 pb-2">Sin ingresos este mes</p>}
                       <div className="space-y-1.5">
                         {ingresos.map(m => (
@@ -1408,11 +1795,8 @@ export function AdminPanel() {
                       </div>
                     </div>
 
-                    {/* Gastos */}
                     <div className="px-4 pt-3">
-                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">
-                        Gastos ({gastos.length})
-                      </p>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Gastos ({gastos.length})</p>
                       {gastos.length === 0 && <p className="text-xs text-slate-400 pb-2">Sin gastos este mes</p>}
                       <div className="space-y-1.5">
                         {gastos.map(m => (
@@ -1428,7 +1812,6 @@ export function AdminPanel() {
                       </div>
                     </div>
 
-                    {/* Cuadre */}
                     <div className="mt-3 px-4 py-3 bg-slate-50 border-t border-slate-100 space-y-2">
                       <div className="flex justify-between text-sm">
                         <span className="font-semibold text-slate-700">Debería haber</span>
@@ -1436,21 +1819,12 @@ export function AdminPanel() {
                       </div>
                       <div className="flex items-center gap-2">
                         <label className="text-xs text-slate-500 flex-1">{c.countLabel}</label>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            value={contadoRaw}
-                            onChange={e => setConteo(key, e.target.value)}
-                            placeholder="0"
-                            className="w-24 border border-slate-200 rounded-xl px-3 py-2 text-sm text-right bg-white focus:outline-none focus:border-[#E05A2B]" />
-                          <span className="text-xs text-slate-400">€</span>
-                        </div>
+                        <input type="number" inputMode="decimal" value={contadoRaw}
+                          onChange={e => setConteo(key, e.target.value)} placeholder="0"
+                          className="w-28 border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right bg-white focus:outline-none focus:border-[#E05A2B]" />
                       </div>
                       {diferencia !== null && (
-                        <div className={`flex justify-between items-center rounded-xl px-3 py-2 ${
-                          Math.abs(diferencia) < 0.5 ? 'bg-emerald-100' : 'bg-red-100'
-                        }`}>
+                        <div className={`flex justify-between items-center rounded-xl px-3 py-2.5 ${Math.abs(diferencia) < 0.5 ? 'bg-emerald-100' : 'bg-red-100'}`}>
                           <span className={`text-xs font-semibold ${Math.abs(diferencia) < 0.5 ? 'text-emerald-700' : 'text-red-700'}`}>
                             {Math.abs(diferencia) < 0.5 ? 'Cuadra' : diferencia > 0 ? 'Sobra' : 'Falta'}
                           </span>
@@ -1464,7 +1838,6 @@ export function AdminPanel() {
                 );
               })}
 
-              {/* Total */}
               <div className="flex justify-between text-sm p-4 bg-slate-900 rounded-2xl">
                 <span className="font-semibold text-white">Total al cierre de {fmtMes(cuadreMes)}</span>
                 <span className="font-bold text-lg text-white">
@@ -1475,45 +1848,51 @@ export function AdminPanel() {
               {pendientesReembolso.length > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
                   <p className="text-xs font-semibold text-amber-800 mb-1">
-                    Fuera de caja: {pendientesReembolso.reduce((a, e) => a + e.amount, 0)}€ adelantados
+                    Fuera de caja: {pendientesReembolso.reduce((a, e) => a + e.amount, 0).toFixed(0)}€ adelantados
                   </p>
                   <p className="text-[11px] text-amber-700">
                     {pendientesReembolso.length} {pendientesReembolso.length === 1 ? 'gasto pagado' : 'gastos pagados'} con dinero propio.
                     No se descuentan de la caja hasta que se devuelven, así que el conteo físico no se ve afectado.
-                    Se marcan como devueltos desde Gastos.
                   </p>
                 </div>
               )}
 
-              <p className="text-[10px] text-slate-400 px-1">
-                El importe contado se guarda en este dispositivo, no en el servidor.
-              </p>
+              <p className="text-[10px] text-slate-400 px-1">El importe contado se guarda en este dispositivo, no en el servidor.</p>
             </div>
           );
         })()}
 
       </div>
 
-      {/* Bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 z-40">
+      {/* Navegación inferior */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 z-40 pb-[env(safe-area-inset-bottom)]">
         <div className="flex">
-          {[{ id: 'today', icon: Home, label: 'Hoy' }, { id: 'list', icon: LayoutList, label: 'Reservas' }, { id: 'calendar', icon: CalendarDays, label: 'Calendario' }, { id: 'expenses', icon: Wallet, label: 'Gastos' }, { id: 'cuadre', icon: Scale, label: 'Cuadre' }, { id: 'stats', icon: BarChart2, label: 'Stats' }].map(tab => (
+          {[
+            { id: 'today', icon: Home, label: 'Hoy' },
+            { id: 'calc', icon: Calculator, label: 'Calcular' },
+            { id: 'calendar', icon: CalendarDays, label: 'Calendario' },
+            { id: 'expenses', icon: Wallet, label: 'Gastos' },
+            { id: 'cuadre', icon: Scale, label: 'Cuadre' },
+            { id: 'stats', icon: BarChart2, label: 'Stats' },
+          ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id as any)}
-              className={`flex-1 flex flex-col items-center py-2.5 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
+              className={`flex-1 flex flex-col items-center justify-center h-14 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
               <tab.icon className="w-5 h-5" />
-              <span className="text-[10px] font-medium">{tab.label}</span>
+              <span className="text-[9px] font-medium">{tab.label}</span>
             </button>
           ))}
         </div>
       </nav>
 
-      {/* Detail popup */}
+      {/* Detalle de reserva */}
       <AnimatePresence>
         {selectedRes && (() => {
           const room = ALL_ROOMS.find(r => r.id === selectedRes.room_id);
-          const pending = (selectedRes.price_total || 0) - (selectedRes.price_paid || 0);
+          const pending = pendienteDe(selectedRes);
           const nights = calcNights(selectedRes.check_in, selectedRes.check_out);
           const isPaid = pending <= 0 && (selectedRes.price_total || 0) > 0;
+          const mensual = esMensual(selectedRes);
+          const cuotas = cuotasDe(selectedRes.id);
           return (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center"
@@ -1523,48 +1902,100 @@ export function AdminPanel() {
                 onClick={e => e.stopPropagation()}>
                 <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
                 <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ background: room?.color }} />
-                    <span className="text-xs text-slate-500">{room?.propertyName} · {room?.name}</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: room?.color }} />
+                    <span className="text-xs text-slate-500 truncate">{room?.propertyName} · {room?.name}</span>
                   </div>
-                  <button onClick={() => setSelectedRes(null)} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-4 h-4 text-slate-400" /></button>
+                  <IconButton onClick={() => setSelectedRes(null)} title="Cerrar" className="text-slate-400 -mr-2">
+                    <X className="w-5 h-5" />
+                  </IconButton>
                 </div>
-                <div className="flex items-center gap-2 mb-4">
+
+                <div className="flex items-center gap-2 mb-4 flex-wrap">
                   <h3 className="text-xl font-bold text-slate-900">{selectedRes.guest_name}</h3>
-                  {isPaid && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">✓ Pagado</span>}
+                  {selectedRes.no_show && <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium">No vino</span>}
+                  {mensual && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium">Renta mensual</span>}
+                  {isPaid && !selectedRes.no_show && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">✓ Pagado</span>}
                 </div>
+
                 <div className="space-y-2.5 mb-4 text-sm">
-                  <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span>{fmtDate(selectedRes.check_in)} → {fmtDate(selectedRes.check_out)} · {nights} {nights === 1 ? 'noche' : 'noches'}</span></div>
-                  <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span>{selectedRes.num_persons} {selectedRes.num_persons === 1 ? 'persona' : 'personas'}</span></div>
-                  {selectedRes.guest_nationality && <div className="flex items-center gap-3"><Globe className="w-4 h-4 text-slate-400" /><span>{selectedRes.guest_nationality}</span></div>}
-                  {selectedRes.guest_phone && <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400" /><span>{selectedRes.guest_phone}</span></div>}
-                  {selectedRes.guest_email && <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400" /><span>{selectedRes.guest_email}</span></div>}
+                  <div className="flex items-center gap-3">
+                    <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                    <span>{fmtDate(selectedRes.check_in)} → {fmtDate(selectedRes.check_out)} · {mensual ? `${cuotas.length} ${cuotas.length === 1 ? 'mes' : 'meses'}` : `${nights} ${nights === 1 ? 'noche' : 'noches'}`}</span>
+                  </div>
+                  <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400 flex-shrink-0" /><span>{selectedRes.num_persons} {selectedRes.num_persons === 1 ? 'persona' : 'personas'}</span></div>
+                  {selectedRes.guest_nationality && <div className="flex items-center gap-3"><Globe className="w-4 h-4 text-slate-400 flex-shrink-0" /><span>{selectedRes.guest_nationality}</span></div>}
+                  {selectedRes.guest_phone && <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400 flex-shrink-0" /><a href={`tel:${selectedRes.guest_phone}`} className="text-blue-600">{selectedRes.guest_phone}</a></div>}
+                  {selectedRes.guest_email && <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400 flex-shrink-0" /><span className="truncate">{selectedRes.guest_email}</span></div>}
                   {selectedRes.channel && <div className="flex items-center gap-3"><span className="w-4 text-center text-xs">📲</span><span>{selectedRes.channel}</span></div>}
                 </div>
+
+                {/* Mensualidades */}
+                {mensual && (
+                  <div className="bg-indigo-50 rounded-xl p-4 mb-4 border border-indigo-100">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-semibold text-slate-700">Mensualidades · {(selectedRes.monthly_rate || 0).toFixed(0)}€/mes</p>
+                      <span className="text-[10px] text-slate-500">{cuotas.filter(c => c.paid_at).length}/{cuotas.length} cobradas</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {cuotas.map(c => (
+                        <div key={c.id} className="flex items-center gap-2 bg-white rounded-lg px-2.5 py-2">
+                          <span className="text-xs font-medium text-slate-700 capitalize flex-1 min-w-0 truncate">{fmtMesCorto(c.period_start)}</span>
+                          <span className="text-xs font-semibold text-slate-800">{c.amount.toFixed(0)}€</span>
+                          {c.paid_at ? (
+                            <button onClick={() => pedirDeshacerMensualidad(c)}
+                              className="h-9 px-2.5 rounded-lg bg-emerald-100 text-emerald-700 text-[10px] font-semibold active:scale-95 transition-transform">
+                              ✓ {c.method || 'Cobrada'}
+                            </button>
+                          ) : (
+                            <button onClick={() => { setRentModal(c); setRentMethod('Efectivo'); setRentAmount(String(c.amount)); }}
+                              className="h-9 px-2.5 rounded-lg bg-indigo-500 text-white text-[10px] font-semibold active:scale-95 transition-transform">
+                              Cobrar
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {!selectedRes.no_show && (
+                      <button onClick={() => pedirProrrogaMes(selectedRes)}
+                        className="w-full mt-2.5 h-11 rounded-xl border border-indigo-200 bg-white text-indigo-700 text-xs font-semibold active:scale-[0.98] transition-transform">
+                        + Añadir un mes
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <div className="bg-slate-50 rounded-xl p-4 mb-4">
                   <p className="text-xs font-semibold text-slate-600 mb-2">Desglose de pagos</p>
-                  <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Total estancia</span><span className="font-semibold">{selectedRes.price_total || 0}€</span></div>
+                  <div className="flex justify-between text-sm mb-1.5"><span className="text-slate-500">Total</span><span className="font-semibold">{(selectedRes.price_total || 0).toFixed(0)}€</span></div>
                   {(selectedRes.deposit_amount || 0) > 0 && (
                     <div className="flex justify-between text-sm mb-1.5">
                       <span className="text-blue-600">🔒 Reserva ({selectedRes.deposit_method})</span>
-                      <span className="font-semibold text-blue-600">{selectedRes.deposit_amount}€</span>
+                      <span className="font-semibold text-blue-600">{(selectedRes.deposit_amount || 0).toFixed(0)}€</span>
                     </div>
                   )}
                   {(selectedRes.checkin_amount || 0) > 0 && (
                     <div className="flex justify-between text-sm mb-1.5">
                       <span className="text-emerald-600">🏠 Ingreso ({selectedRes.checkin_method})</span>
-                      <span className="font-semibold text-emerald-600">{selectedRes.checkin_amount}€</span>
+                      <span className="font-semibold text-emerald-600">{(selectedRes.checkin_amount || 0).toFixed(0)}€</span>
+                    </div>
+                  )}
+                  {mensual && cuotas.filter(c => c.paid_at).length > 0 && (
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span className="text-indigo-600">🔑 Mensualidades</span>
+                      <span className="font-semibold text-indigo-600">{cuotas.filter(c => c.paid_at).reduce((a, c) => a + c.amount, 0).toFixed(0)}€</span>
                     </div>
                   )}
                   <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5">
-                    {isPaid
+                    {selectedRes.no_show
+                      ? <><span className="text-slate-500">Estado</span><span className="font-bold text-slate-600">No vino · {(selectedRes.price_paid || 0).toFixed(0)}€ retenidos</span></>
+                      : isPaid
                       ? <><span className="text-slate-500">Estado</span><span className="font-bold text-emerald-600">✓ Completamente pagado</span></>
-                      : <><span className="text-slate-500">Pendiente al ingreso</span><span className="font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span></>
-                    }
+                      : <><span className="text-slate-500">Pendiente</span><span className="font-bold text-[#E05A2B]">{pending.toFixed(0)}€</span></>}
                   </div>
                 </div>
 
-                {/* Piso gestionado: comisión y estado de liquidación */}
+                {/* Piso gestionado */}
                 {isManaged(selectedRes.room_id) && (
                   <div className="bg-purple-50 rounded-xl p-4 mb-4 border border-purple-100">
                     <p className="text-xs font-semibold text-slate-700 mb-2">🏠 Piso gestionado</p>
@@ -1572,24 +2003,14 @@ export function AdminPanel() {
                       <span className="text-slate-500">Nuestra comisión</span>
                       <span className="font-bold text-emerald-600">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
                     </div>
-                    <p className="text-[10px] text-slate-500 mb-2">
-                      El propietario cobra la estancia directo. Nosotros solo facturamos la comisión.
-                    </p>
+                    <p className="text-[10px] text-slate-500 mb-2">El propietario cobra la estancia directo. Nosotros solo facturamos la comisión.</p>
                     <div className="border-t border-purple-200 pt-2 mt-2">
                       {selectedRes.settled_at ? (
                         <>
-                          <div className="flex justify-between text-xs mb-2">
-                            <span className="text-emerald-700">
-                              ✓ Cobrada el {fmtDate(selectedRes.settled_at)} · {selectedRes.settled_method || 'Efectivo'}
-                            </span>
-                            <span className="font-bold text-emerald-600">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
-                          </div>
-                          <p className="text-[10px] text-slate-400 mb-2">
-                            Entró en: {cajaLabel(cajaDeComision(selectedRes.settled_method))}
-                          </p>
-                          <button
-                            onClick={() => handleUnsettle(selectedRes.id)}
-                            className="w-full py-2 rounded-xl text-[11px] font-medium border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 transition-colors">
+                          <p className="text-xs text-emerald-700 mb-1">✓ Cobrada el {fmtDate(selectedRes.settled_at)} · {selectedRes.settled_method || 'Efectivo'}</p>
+                          <p className="text-[10px] text-slate-400 mb-2">Entró en: {cajaLabel(cajaDeComision(selectedRes.settled_method))}</p>
+                          <button onClick={() => pedirDeshacerLiquidacion(selectedRes)}
+                            className="w-full h-11 rounded-xl text-[11px] font-medium border border-slate-200 bg-white text-slate-500 active:scale-[0.98] transition-transform">
                             Deshacer cobro
                           </button>
                         </>
@@ -1599,9 +2020,8 @@ export function AdminPanel() {
                             <span className="text-slate-500">Pendiente de cobro</span>
                             <span className="font-bold text-[#E05A2B]">{(selectedRes.commission_amount || 0).toFixed(0)}€</span>
                           </div>
-                          <button
-                            onClick={() => { setSettleTargetId(selectedRes.id); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
-                            className="w-full py-2.5 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-xl text-xs font-semibold transition-colors">
+                          <button onClick={() => { setSettleTargetId(selectedRes.id); setSettleMethod('Efectivo'); setShowSettleModal(true); }}
+                            className="w-full h-11 bg-[#8B5CF6] text-white rounded-xl text-xs font-semibold active:scale-[0.98] transition-transform">
                             Liquidar comisión
                           </button>
                         </>
@@ -1610,27 +2030,42 @@ export function AdminPanel() {
                   </div>
                 )}
 
-                {selectedRes.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600">{selectedRes.notes}</div>}
+                {selectedRes.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600 whitespace-pre-wrap">{selectedRes.notes}</div>}
 
-                {/* Botón cobrar rápido */}
-                {!isPaid && (
-                  <button
-                    onClick={() => {
-                      const pend = (selectedRes.price_total || 0) - (selectedRes.price_paid || 0);
+                {!isPaid && !selectedRes.no_show && !mensual && (
+                  <button onClick={() => {
                       setPayingResId(selectedRes.id);
-                      setPayAmount(pend.toFixed(0));
+                      setPayAmount(pending.toFixed(0));
                       setPayMethod('Efectivo');
                       setShowPayModal(true);
                     }}
-                    className="w-full mb-3 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
-                  >
+                    className="w-full mb-3 h-12 bg-emerald-500 text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-transform">
                     💵 Registrar pago al ingreso
                   </button>
                 )}
 
+                {/* No vino */}
+                {selectedRes.no_show ? (
+                  <button onClick={() => pedirDeshacerNoShow(selectedRes)}
+                    className="w-full mb-3 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 font-medium active:scale-[0.98] transition-transform">
+                    Deshacer «no vino»
+                  </button>
+                ) : (
+                  <button onClick={() => pedirNoShow(selectedRes)}
+                    className="w-full mb-3 h-12 border border-amber-200 bg-amber-50 text-amber-700 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 active:scale-[0.98] transition-transform">
+                    <UserX className="w-4 h-4" /> No vino · liberar habitación
+                  </button>
+                )}
+
                 <div className="flex gap-2">
-                  <button onClick={() => handleEdit(selectedRes)} className="flex-1 flex items-center justify-center gap-2 py-3 border border-slate-200 rounded-xl text-sm text-slate-600"><Edit2 className="w-3.5 h-3.5" /> Editar</button>
-                  <button onClick={() => handleDelete(selectedRes.id)} className="flex-1 flex items-center justify-center gap-2 py-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-500"><Trash2 className="w-3.5 h-3.5" /> Eliminar</button>
+                  <button onClick={() => handleEdit(selectedRes)}
+                    className="flex-1 flex items-center justify-center gap-2 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 active:scale-[0.98] transition-transform">
+                    <Edit2 className="w-4 h-4" /> Editar
+                  </button>
+                  <button onClick={() => pedirBorrarReserva(selectedRes)}
+                    className="flex-1 flex items-center justify-center gap-2 h-12 bg-red-50 border border-red-100 rounded-xl text-sm text-red-500 active:scale-[0.98] transition-transform">
+                    <Trash2 className="w-4 h-4" /> Eliminar
+                  </button>
                 </div>
               </motion.div>
             </motion.div>
@@ -1638,260 +2073,315 @@ export function AdminPanel() {
         })()}
       </AnimatePresence>
 
-      {/* Reservation Form */}
+      {/* Formulario de reserva */}
       <AnimatePresence>
-        {showForm && (
+        {showForm && (() => {
+          const puedeMensual = admiteMensual(Number(form.room_id));
+          const mensual = form.rental_type === 'monthly' && puedeMensual;
+          const meses = Number(form.months_count) || 1;
+          return (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center"
-            onClick={e => { if (e.target === e.currentTarget) { setShowForm(false); setEditingId(null); } }}>
+            onClick={e => { if (e.target === e.currentTarget && !busy) { setShowForm(false); setEditingId(null); } }}>
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
               className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-lg shadow-xl max-h-[95vh] flex flex-col"
               onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0 relative">
-                <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto sm:hidden absolute left-1/2 -translate-x-1/2 top-2" />
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 flex-shrink-0">
                 <h3 className="font-semibold text-slate-900">{editingId ? 'Editar reserva' : 'Nueva reserva'}</h3>
-                <button onClick={() => { setShowForm(false); setEditingId(null); setFormError(''); }} className="p-1.5 hover:bg-slate-100 rounded-xl"><X className="w-4 h-4 text-slate-500" /></button>
+                <IconButton onClick={() => { if (busy) return; setShowForm(false); setEditingId(null); setFormError(''); }} title="Cerrar" className="text-slate-500 -mr-2">
+                  <X className="w-5 h-5" />
+                </IconButton>
               </div>
-              <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
+
+              <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto flex-1">
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
                   <div className="grid grid-cols-3 gap-2">
                     {PROPERTIES.map(p => (
-                      <button key={p.id} type="button" onClick={() => { setSelectedProperty(p.id); setForm(f => ({ ...f, room_id: p.rooms[0].id })); }}
-                        className="py-2.5 rounded-xl text-xs font-semibold border transition-all"
+                      <button key={p.id} type="button" onClick={() => { setSelectedProperty(p.id); setForm(f => ({ ...f, room_id: p.rooms[0].id, rental_type: 'nightly' })); }}
+                        className="h-11 rounded-xl text-xs font-semibold border transition-all"
                         style={selectedProperty === p.id ? { background: p.color, color: 'white', borderColor: p.color } : { background: 'white', color: '#64748b', borderColor: '#e2e8f0' }}>
                         {p.name}
                       </button>
                     ))}
                   </div>
                 </div>
+
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Habitación *</label>
                   <div className="flex flex-wrap gap-2">
                     {(PROPERTIES.find(p => p.id === selectedProperty)?.rooms || []).map(r => (
-                      <button key={r.id} type="button" onClick={() => setForm(f => ({ ...f, room_id: r.id }))}
-                        className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${form.room_id === r.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                      <button key={r.id} type="button"
+                        onClick={() => setForm(f => ({ ...f, room_id: r.id, rental_type: admiteMensual(r.id) ? f.rental_type : 'nightly' }))}
+                        className={`h-11 px-3 rounded-xl text-xs font-medium border transition-colors ${form.room_id === r.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
                         {r.name}
                       </button>
                     ))}
                   </div>
                 </div>
+
+                {/* Modalidad: solo en las medianas del Born */}
+                {puedeMensual && (
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-2 block">Modalidad</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={() => setModalidad('nightly')}
+                        className={`h-11 rounded-xl text-xs font-semibold border transition-colors ${!mensual ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        Por noches
+                      </button>
+                      <button type="button" onClick={() => setModalidad('monthly')}
+                        className={`h-11 rounded-xl text-xs font-semibold border transition-colors ${mensual ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        Renta mensual
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-3">
                   <div className="col-span-2 sm:col-span-1">
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Nombre *</label>
-                    <input required value={form.guest_name} onChange={e => setForm(f => ({ ...f, guest_name: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="John Doe" />
+                    <input required value={form.guest_name} onChange={e => setForm(f => ({ ...f, guest_name: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="John Doe" />
                   </div>
                   <div className="col-span-2 sm:col-span-1">
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Teléfono</label>
-                    <input value={form.guest_phone} onChange={e => setForm(f => ({ ...f, guest_phone: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="+34 600 000 000" />
+                    <input value={form.guest_phone} onChange={e => setForm(f => ({ ...f, guest_phone: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="+34 600 000 000" />
                   </div>
                 </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Personas *</label>
-                    <input required type="number" min="1" value={form.num_persons} onChange={e => setForm(f => ({ ...f, num_persons: Number(e.target.value) }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                    <input required type="number" min="1" value={form.num_persons}
+                      onChange={e => setForm(f => ({ ...f, num_persons: Number(e.target.value) }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
                   </div>
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Nacionalidad</label>
                     <NationalitySearch value={form.guest_nationality} onChange={v => setForm(f => ({ ...f, guest_nationality: v }))} />
                   </div>
                 </div>
+
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Canal</label>
                   <div className="flex flex-wrap gap-2">
-                    {CHANNELS.map(c => <button key={c} type="button" onClick={() => setForm(f => ({ ...f, channel: c }))} className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${form.channel === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>{c}</button>)}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">Check-in *</label>
-                    <input required type="date" value={form.check_in} onChange={e => handleCIO('check_in', e.target.value)} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">Check-out *</label>
-                    <input required type="date" value={form.check_out} onChange={e => handleCIO('check_out', e.target.value)} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
-                  </div>
-                </div>
-                <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
-                  <p className="text-xs font-semibold text-slate-600 mb-3">💰 Calculadora</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">€/noche</label>
-                      <input type="number" value={form.price_per_night} onChange={e => handlePPN(e.target.value)} className="w-full border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">Noches</label>
-                      <div className="border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-slate-700 font-medium">{calcNights(form.check_in, form.check_out) || '—'}</div>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">Total</label>
-                      <div className="border border-[#E05A2B]/40 rounded-xl px-2 py-2 text-sm bg-orange-50 text-[#E05A2B] font-bold">
-                        {form.price_per_night && calcNights(form.check_in, form.check_out) ? `${(parseFloat(form.price_per_night) * calcNights(form.check_in, form.check_out)).toFixed(0)}€` : '—'}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">Total estancia (€)</label>
-                    <input type="number" value={form.price_total} onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
-                  </div>
-                  <div className="flex items-end">
-                    {form.price_total && (form.deposit_amount || form.checkin_amount) && (
-                      <div className="w-full bg-slate-50 rounded-xl p-2.5 text-xs text-slate-600">
-                        Pendiente: <span className="font-bold text-[#E05A2B]">
-                          {Math.max(0, Number(form.price_total) - (Number(form.deposit_amount) || 0) - (Number(form.checkin_amount) || 0)).toFixed(0)}€
-                        </span>
-                      </div>
-                    )}
+                    {CHANNELS.map(c => (
+                      <button key={c} type="button" onClick={() => setForm(f => ({ ...f, channel: c }))}
+                        className={`h-10 px-3 rounded-xl text-xs font-medium border transition-colors ${form.channel === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {c}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                {/* Pago reserva */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">{mensual ? 'Entrada *' : 'Check-in *'}</label>
+                    <input required type="date" value={form.check_in} onChange={e => handleCIO('check_in', e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">{mensual ? 'Salida (calculada)' : 'Check-out *'}</label>
+                    <input required type="date" value={form.check_out} readOnly={mensual}
+                      onChange={e => handleCIO('check_out', e.target.value)}
+                      className={`w-full border rounded-xl px-3 py-3 text-sm focus:outline-none ${mensual ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-slate-200 focus:border-[#E05A2B]'}`} />
+                  </div>
+                </div>
+
+                {/* RENTA MENSUAL */}
+                {mensual ? (
+                  <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100 space-y-3">
+                    <p className="text-xs font-semibold text-slate-700">🔑 Renta mensual</p>
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1.5 block">¿Cuántos meses?</label>
+                      <div className="flex flex-wrap gap-2">
+                        {[1, 2, 3, 4, 6, 12].map(n => (
+                          <button key={n} type="button" onClick={() => setMeses(n)}
+                            className={`h-11 w-11 rounded-xl text-xs font-bold border transition-colors ${meses === n ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-600 border-slate-200'}`}>
+                            {n}
+                          </button>
+                        ))}
+                        <input type="number" min="1" value={form.months_count}
+                          onChange={e => setMeses(Number(e.target.value))}
+                          className="h-11 w-20 border border-slate-200 rounded-xl px-3 text-sm text-center bg-white focus:outline-none focus:border-indigo-500" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Importe por mes (€) *</label>
+                      <input required type="number" min="0" step="0.01" value={form.monthly_rate}
+                        onChange={e => setImporteMes(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm bg-white focus:outline-none focus:border-indigo-500" placeholder="0" />
+                    </div>
+                    {Number(form.monthly_rate) > 0 && (
+                      <div className="bg-white rounded-xl p-3 text-xs space-y-1">
+                        <div className="flex justify-between"><span className="text-slate-500">{meses} × {Number(form.monthly_rate).toFixed(0)}€</span><span className="font-bold text-indigo-600">{(Number(form.monthly_rate) * meses).toFixed(0)}€</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Periodo</span><span className="font-medium text-slate-700">{fmtDate(form.check_in)} → {fmtDate(form.check_out)}</span></div>
+                        <p className="text-[10px] text-slate-400 pt-1 border-t border-slate-100">
+                          Se crearán {meses} {meses === 1 ? 'mensualidad' : 'mensualidades'} pendientes. Las vas cobrando desde la ficha de la reserva.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                      <p className="text-xs font-semibold text-slate-600 mb-3">💰 Calculadora</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-500 mb-1 block">€/noche</label>
+                          <input type="number" value={form.price_per_night} onChange={e => handlePPN(e.target.value)}
+                            className="w-full border border-slate-200 rounded-xl px-2 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-500 mb-1 block">Noches</label>
+                          <div className="border border-slate-200 rounded-xl px-2 py-2.5 text-sm bg-white text-slate-700 font-medium text-center">{calcNights(form.check_in, form.check_out) || '—'}</div>
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-500 mb-1 block">Total</label>
+                          <div className="border border-[#E05A2B]/40 rounded-xl px-2 py-2.5 text-sm bg-orange-50 text-[#E05A2B] font-bold text-center">
+                            {form.price_per_night && calcNights(form.check_in, form.check_out) ? `${(parseFloat(form.price_per_night) * calcNights(form.check_in, form.check_out)).toFixed(0)}€` : '—'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1 block">Total estancia (€)</label>
+                      <input type="number" value={form.price_total} onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                    </div>
+                  </>
+                )}
+
+                {/* Pago al reservar */}
                 <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
                   <p className="text-xs font-semibold text-slate-700 mb-3">🔒 Pago al reservar</p>
-                  <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="text-[10px] text-slate-500 mb-1 block">Importe (€)</label>
-                      <input type="number" value={form.deposit_amount} onChange={e => setForm(f => ({ ...f, deposit_amount: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                      <input type="number" value={form.deposit_amount} onChange={e => setForm(f => ({ ...f, deposit_amount: e.target.value }))}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-500 mb-1 block">Método</label>
                       <div className="flex flex-wrap gap-1.5">
                         {['Transferencia', 'Efectivo', 'Bizum', 'PayPal'].map(m => (
                           <button key={m} type="button" onClick={() => setForm(f => ({ ...f, deposit_method: m }))}
-                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors ${form.deposit_method === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>
+                            className={`h-9 px-2 rounded-lg text-[10px] font-medium border transition-colors ${form.deposit_method === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>
                             {m}
                           </button>
                         ))}
                       </div>
                     </div>
                   </div>
-                  <p className="text-[10px] text-slate-500">
-                    Entra en: {cajaLabel(cajaDeReserva(Number(form.room_id), form.deposit_method))}
-                  </p>
+                  <p className="text-[10px] text-slate-500 mt-3">Entra en: {cajaLabel(cajaDeReserva(Number(form.room_id), form.deposit_method))}</p>
                 </div>
 
-                {/* Pago al ingreso */}
-                <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
-                  <p className="text-xs font-semibold text-slate-700 mb-3">🏠 Pago al ingresar</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">Importe (€)</label>
-                      <input type="number" value={form.checkin_amount} onChange={e => setForm(f => ({ ...f, checkin_amount: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">Método</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
-                          <button key={m} type="button" onClick={() => setForm(f => ({ ...f, checkin_method: m }))}
-                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors ${form.checkin_method === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200'}`}>
-                            {m}
-                          </button>
-                        ))}
+                {/* Pago al ingreso — no aplica en renta mensual */}
+                {!mensual && (
+                  <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
+                    <p className="text-xs font-semibold text-slate-700 mb-3">🏠 Pago al ingresar</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] text-slate-500 mb-1 block">Importe (€)</label>
+                        <input type="number" value={form.checkin_amount} onChange={e => setForm(f => ({ ...f, checkin_amount: e.target.value }))}
+                          className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500 mb-1 block">Método</label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
+                            <button key={m} type="button" onClick={() => setForm(f => ({ ...f, checkin_method: m }))}
+                              className={`h-9 px-2 rounded-lg text-[10px] font-medium border transition-colors ${form.checkin_method === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200'}`}>
+                              {m}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <p className="text-[10px] text-slate-500 mt-3">
-                    Entra en: {cajaLabel(cajaDeReserva(Number(form.room_id), form.checkin_method))}
-                  </p>
-                </div>
-
-                {/* Resumen */}
-                {form.price_total && (
-                  <div className="bg-slate-50 rounded-xl p-3 text-xs">
-                    <div className="flex justify-between mb-1"><span className="text-slate-500">Total</span><span className="font-semibold text-slate-900">{form.price_total}€</span></div>
-                    {Number(form.deposit_amount) > 0 && <div className="flex justify-between mb-1"><span className="text-blue-600">↳ Reserva ({form.deposit_method})</span><span className="font-semibold text-blue-600">{form.deposit_amount}€</span></div>}
-                    {Number(form.checkin_amount) > 0 && <div className="flex justify-between mb-1"><span className="text-emerald-600">↳ Ingreso ({form.checkin_method})</span><span className="font-semibold text-emerald-600">{form.checkin_amount}€</span></div>}
-                    <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1">
-                      <span className="text-slate-500">Estado</span>
-                      {(Number(form.deposit_amount) + Number(form.checkin_amount)) >= Number(form.price_total)
-                        ? <span className="font-bold text-emerald-600">✓ Pagado completo</span>
-                        : (Number(form.deposit_amount) + Number(form.checkin_amount)) > 0
-                        ? <span className="font-bold text-yellow-600">Parcial — pendiente {(Number(form.price_total) - Number(form.deposit_amount) - Number(form.checkin_amount)).toFixed(0)}€</span>
-                        : <span className="font-bold text-[#E05A2B]">Pendiente {form.price_total}€</span>
-                      }
-                    </div>
+                    <p className="text-[10px] text-slate-500 mt-3">Entra en: {cajaLabel(cajaDeReserva(Number(form.room_id), form.checkin_method))}</p>
                   </div>
                 )}
 
-                {/* Comisión de gestión — solo pisos que administramos para terceros */}
+                {/* Comisión Sagrada */}
                 {isManaged(Number(form.room_id)) && (
                   <div className="bg-purple-50 rounded-xl p-4 border border-purple-100">
                     <p className="text-xs font-semibold text-slate-700 mb-1">🏠 Piso gestionado — Comisión</p>
-                    <p className="text-[10px] text-slate-500 mb-3">
-                      Este piso no es nuestro. Solo la comisión entra en nuestro cuadre, y únicamente al liquidarla.
-                    </p>
+                    <p className="text-[10px] text-slate-500 mb-3">Este piso no es nuestro. Solo la comisión entra en nuestro cuadre, y únicamente al liquidarla.</p>
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
                         <label className="text-[10px] text-slate-500 mb-1 block">Comisión (€)</label>
                         <input type="number" value={form.commission_amount}
                           onChange={e => setForm(f => ({ ...f, commission_amount: e.target.value }))}
-                          className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#8B5CF6]"
-                          placeholder="0" />
+                          className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#8B5CF6]" placeholder="0" />
                       </div>
                       <div className="flex items-end">
                         <button type="button"
-                          onClick={() => setForm(f => ({
-                            ...f,
-                            commission_amount: suggestCommission(Number(f.room_id), Number(f.num_persons), f.check_in, f.check_out).toString()
-                          }))}
-                          className="w-full py-2.5 rounded-xl text-[11px] font-medium border border-purple-200 bg-white text-purple-700 hover:bg-purple-50 transition-colors">
-                          Calcular {DEFAULT_COMMISSION_PER_PAX_NIGHT}€ × {form.num_persons || 1} pax × {calcNights(form.check_in, form.check_out) || 0} noches
+                          onClick={() => setForm(f => ({ ...f, commission_amount: suggestCommission(Number(f.room_id), Number(f.num_persons), f.check_in, f.check_out).toString() }))}
+                          className="w-full h-11 rounded-xl text-[11px] font-medium border border-purple-200 bg-white text-purple-700 active:scale-95 transition-transform">
+                          {DEFAULT_COMMISSION_PER_PAX_NIGHT}€ × {form.num_persons || 1} × {calcNights(form.check_in, form.check_out) || 0}
                         </button>
                       </div>
                     </div>
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input type="checkbox" checked={form.collected_by_us}
                         onChange={e => setForm(f => ({ ...f, collected_by_us: e.target.checked }))}
-                        className="w-4 h-4 rounded border-slate-300 accent-[#8B5CF6]" />
-                      <span className="text-xs text-slate-600">Cobramos nosotros el total (hay que liquidar al propietario)</span>
+                        className="w-5 h-5 rounded border-slate-300 accent-[#8B5CF6]" />
+                      <span className="text-xs text-slate-600">Cobramos nosotros el total</span>
                     </label>
-                    {form.price_total && form.commission_amount && (
-                      <div className="mt-3 pt-3 border-t border-purple-200 space-y-1 text-xs">
-                        <div className="flex justify-between"><span className="text-slate-500">Precio estancia</span><span className="font-medium">{form.price_total}€</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Nuestra comisión</span><span className="font-semibold text-emerald-600">{form.commission_amount}€</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Para el propietario</span><span className="font-semibold text-purple-700">{(Number(form.price_total) - Number(form.commission_amount)).toFixed(0)}€</span></div>
-                      </div>
-                    )}
                   </div>
                 )}
 
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Notas</label>
-                  <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B] resize-none" placeholder="Info adicional..." />
+                  <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B] resize-none" placeholder="Info adicional..." />
                 </div>
-                {formError && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">⚠️ {formError}</div>}
-                <div className="flex gap-3 pb-2">
-                  <button type="button" onClick={() => { setShowForm(false); setEditingId(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
-                  <button type="submit" className="flex-1 py-3 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold">{editingId ? 'Guardar' : 'Crear reserva'}</button>
+
+                {formError && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">⚠️ {formError}</div>
+                )}
+
+                <div className="flex gap-3 pb-2 sticky bottom-0 bg-white pt-2">
+                  <button type="button" disabled={busy} onClick={() => { setShowForm(false); setEditingId(null); }}
+                    className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">
+                    Cancelar
+                  </button>
+                  <button type="submit" disabled={busy}
+                    className="flex-1 h-12 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2 active:scale-[0.98] transition-transform">
+                    {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {busy ? 'Guardando...' : editingId ? 'Guardar' : 'Crear reserva'}
+                  </button>
                 </div>
               </form>
             </motion.div>
           </motion.div>
-        )}
+          );
+        })()}
       </AnimatePresence>
 
-      {/* Expense Form */}
+      {/* Formulario de gasto */}
       <AnimatePresence>
         {showExpenseForm && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center"
-            onClick={e => { if (e.target === e.currentTarget) { setShowExpenseForm(false); setEditingExpenseId(null); } }}>
+            onClick={e => { if (e.target === e.currentTarget && !busy) { setShowExpenseForm(false); setEditingExpenseId(null); } }}>
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
               className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-md shadow-xl max-h-[90vh] flex flex-col"
               onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 flex-shrink-0">
                 <h3 className="font-semibold text-slate-900">{editingExpenseId ? 'Editar gasto' : 'Nuevo gasto'}</h3>
-                <button onClick={() => { setShowExpenseForm(false); setEditingExpenseId(null); }} className="p-1.5 hover:bg-slate-100 rounded-xl"><X className="w-4 h-4 text-slate-500" /></button>
+                <IconButton onClick={() => { if (busy) return; setShowExpenseForm(false); setEditingExpenseId(null); }} title="Cerrar" className="text-slate-500 -mr-2">
+                  <X className="w-5 h-5" />
+                </IconButton>
               </div>
-              <form onSubmit={handleExpenseSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
+              <form onSubmit={handleExpenseSubmit} className="p-4 space-y-4 overflow-y-auto flex-1">
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
                   <div className="grid grid-cols-3 gap-2">
                     {PROPERTIES.map(p => (
                       <button key={p.id} type="button" onClick={() => setExpenseForm(f => ({ ...f, property_id: p.id }))}
-                        className="py-2.5 rounded-xl text-xs font-semibold border transition-all"
+                        className="h-11 rounded-xl text-xs font-semibold border transition-all"
                         style={expenseForm.property_id === p.id ? { background: p.color, color: 'white', borderColor: p.color } : { background: 'white', color: '#64748b', borderColor: '#e2e8f0' }}>
                         {p.name}
                       </button>
@@ -1903,7 +2393,7 @@ export function AdminPanel() {
                   <div className="flex flex-wrap gap-2">
                     {EXPENSE_CATEGORIES.map(c => (
                       <button key={c} type="button" onClick={() => setExpenseForm(f => ({ ...f, category: c }))}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${expenseForm.category === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        className={`h-10 px-3 rounded-xl text-xs font-medium border transition-colors ${expenseForm.category === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
                         {c}
                       </button>
                     ))}
@@ -1911,16 +2401,15 @@ export function AdminPanel() {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Descripción *</label>
-                  <input required value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="Ej: Compra sofá salón" />
+                  <input required value={expenseForm.description} onChange={e => setExpenseForm(f => ({ ...f, description: e.target.value }))}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="Ej: Compra sofá salón" />
                 </div>
-
-                {/* Quién lo pagó */}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Lo pagó *</label>
                   <div className="grid grid-cols-2 gap-2">
                     {PAGADORES.map(p => (
                       <button key={p} type="button" onClick={() => setExpenseForm(f => ({ ...f, paid_by: p }))}
-                        className={`py-2.5 rounded-xl text-xs font-semibold border transition-colors ${expenseForm.paid_by === p ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        className={`h-11 rounded-xl text-xs font-semibold border transition-colors ${expenseForm.paid_by === p ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
                         {p}
                       </button>
                     ))}
@@ -1928,22 +2417,19 @@ export function AdminPanel() {
                   <label className="flex items-start gap-2 cursor-pointer mt-3">
                     <input type="checkbox" checked={expenseForm.own_money}
                       onChange={e => setExpenseForm(f => ({ ...f, own_money: e.target.checked }))}
-                      className="w-4 h-4 mt-0.5 rounded border-slate-300 accent-[#E05A2B]" />
+                      className="w-5 h-5 mt-0.5 rounded border-slate-300 accent-[#E05A2B]" />
                     <span className="text-xs text-slate-600">
                       Lo puso de su bolsillo
-                      <span className="block text-[10px] text-slate-400">
-                        No sale de la caja hasta que se le devuelve el dinero.
-                      </span>
+                      <span className="block text-[10px] text-slate-400">No sale de la caja hasta que se le devuelve el dinero.</span>
                     </span>
                   </label>
                 </div>
-
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Método de pago</label>
                   <div className="flex flex-wrap gap-2">
                     {PAYMENT_METHODS.map(m => (
                       <button key={m} type="button" onClick={() => setExpenseForm(f => ({ ...f, payment_method: m }))}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${expenseForm.payment_method === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        className={`h-10 px-3 rounded-xl text-xs font-medium border transition-colors ${expenseForm.payment_method === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
                         {m}
                       </button>
                     ))}
@@ -1957,16 +2443,25 @@ export function AdminPanel() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€) *</label>
-                    <input required type="number" min="0" step="0.01" value={expenseForm.amount} onChange={e => setExpenseForm(f => ({ ...f, amount: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                    <input required type="number" min="0" step="0.01" value={expenseForm.amount}
+                      onChange={e => setExpenseForm(f => ({ ...f, amount: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
                   </div>
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Fecha *</label>
-                    <input required type="date" value={expenseForm.date} onChange={e => setExpenseForm(f => ({ ...f, date: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                    <input required type="date" value={expenseForm.date}
+                      onChange={e => setExpenseForm(f => ({ ...f, date: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
                   </div>
                 </div>
                 <div className="flex gap-3 pb-2">
-                  <button type="button" onClick={() => { setShowExpenseForm(false); setEditingExpenseId(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
-                  <button type="submit" className="flex-1 py-3 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold">{editingExpenseId ? 'Guardar' : 'Añadir gasto'}</button>
+                  <button type="button" disabled={busy} onClick={() => { setShowExpenseForm(false); setEditingExpenseId(null); }}
+                    className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">Cancelar</button>
+                  <button type="submit" disabled={busy}
+                    className="flex-1 h-12 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+                    {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {busy ? 'Guardando...' : editingExpenseId ? 'Guardar' : 'Añadir gasto'}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -1974,40 +2469,41 @@ export function AdminPanel() {
         )}
       </AnimatePresence>
 
-      {/* Quick Pay Modal */}
+      {/* Cobro rápido */}
       <AnimatePresence>
         {showPayModal && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center"
-            onClick={e => { if (e.target === e.currentTarget) setShowPayModal(false); }}>
+            onClick={e => { if (e.target === e.currentTarget && !busy) setShowPayModal(false); }}>
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
-              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6"
-              onClick={e => e.stopPropagation()}>
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6" onClick={e => e.stopPropagation()}>
               <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
               <h3 className="font-semibold text-slate-900 mb-4">💵 Registrar pago al ingreso</h3>
               <div className="space-y-4">
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€)</label>
-                  <input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)}
-                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-emerald-500"
-                    placeholder="0" autoFocus />
+                  <input type="number" inputMode="decimal" value={payAmount} onChange={e => setPayAmount(e.target.value)}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-emerald-500" placeholder="0" autoFocus />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-2 block">Método</label>
                   <div className="flex flex-wrap gap-2">
                     {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
                       <button key={m} type="button" onClick={() => setPayMethod(m)}
-                        className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${
-                          payMethod === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200'
-                        }`}>
+                        className={`h-11 px-3 rounded-xl text-xs font-medium border transition-colors ${payMethod === m ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200'}`}>
                         {m}
                       </button>
                     ))}
                   </div>
                 </div>
                 <div className="flex gap-3">
-                  <button onClick={() => setShowPayModal(false)} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
-                  <button onClick={handleQuickPay} className="flex-1 py-3 bg-emerald-500 text-white rounded-xl text-sm font-semibold">Confirmar</button>
+                  <button disabled={busy} onClick={() => setShowPayModal(false)}
+                    className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">Cancelar</button>
+                  <button disabled={busy} onClick={handleQuickPay}
+                    className="flex-1 h-12 bg-emerald-500 text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+                    {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {busy ? 'Guardando...' : 'Confirmar'}
+                  </button>
                 </div>
               </div>
             </motion.div>
@@ -2015,57 +2511,137 @@ export function AdminPanel() {
         )}
       </AnimatePresence>
 
-      {/* Modal liquidar comisiones Sagrada */}
+      {/* Cobro de mensualidad */}
+      <AnimatePresence>
+        {rentModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center"
+            onClick={e => { if (e.target === e.currentTarget && !busy) setRentModal(null); }}>
+            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6" onClick={e => e.stopPropagation()}>
+              <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
+              <h3 className="font-semibold text-slate-900 mb-1">🔑 Cobrar mensualidad</h3>
+              <p className="text-xs text-slate-500 mb-4 capitalize">{rentModal.guest_name} · {fmtMesCorto(rentModal.period_start)}</p>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€)</label>
+                  <input type="number" inputMode="decimal" value={rentAmount} onChange={e => setRentAmount(e.target.value)}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Método</label>
+                  <div className="flex flex-wrap gap-2">
+                    {['Efectivo', 'Transferencia', 'Bizum', 'Tarjeta'].map(m => (
+                      <button key={m} type="button" onClick={() => setRentMethod(m)}
+                        className={`h-11 px-3 rounded-xl text-xs font-medium border transition-colors ${rentMethod === m ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1.5">
+                    Entra en: {cajaLabel(cajaDeReserva(Number(rentModal.room_id) || 2, rentMethod))}
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <button disabled={busy} onClick={() => setRentModal(null)}
+                    className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">Cancelar</button>
+                  <button disabled={busy} onClick={confirmarCobroMensualidad}
+                    className="flex-1 h-12 bg-indigo-500 text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+                    {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {busy ? 'Guardando...' : 'Confirmar'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Liquidar comisiones */}
       <AnimatePresence>
         {showSettleModal && (() => {
           const target = settleTargetId ? reservations.find(r => r.id === settleTargetId) : null;
-          const importe = target
-            ? (Number(target.commission_amount) || 0)
-            : reservations.reduce((a, r) => a + comisionPendiente(r), 0);
+          const importe = target ? (Number(target.commission_amount) || 0) : reservations.reduce((a, r) => a + comisionPendiente(r), 0);
           return (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center"
-              onClick={e => { if (e.target === e.currentTarget) { setShowSettleModal(false); setSettleTargetId(null); } }}>
+              onClick={e => { if (e.target === e.currentTarget && !busy) { setShowSettleModal(false); setSettleTargetId(null); } }}>
               <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
-                className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6"
-                onClick={e => e.stopPropagation()}>
+                className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6" onClick={e => e.stopPropagation()}>
                 <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
                 <h3 className="font-semibold text-slate-900 mb-1">🏠 Cobro de comisiones</h3>
-                <p className="text-xs text-slate-500 mb-4">
-                  Sagrada Família{target ? ` · ${target.guest_name}` : ' · todas las pendientes'}
-                </p>
+                <p className="text-xs text-slate-500 mb-4">Sagrada Família{target ? ` · ${target.guest_name}` : ' · todas las pendientes'}</p>
                 <div className="space-y-4">
-                  <div className="bg-purple-50 rounded-xl p-3">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-600">Total a cobrar</span>
-                      <span className="font-bold text-purple-600">{importe.toFixed(0)}€</span>
-                    </div>
+                  <div className="bg-purple-50 rounded-xl p-3 flex justify-between text-sm">
+                    <span className="text-slate-600">Total a cobrar</span>
+                    <span className="font-bold text-purple-600">{importe.toFixed(0)}€</span>
                   </div>
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-2 block">¿Dónde entra el dinero?</label>
                     <div className="flex gap-2">
                       {(['Efectivo', 'BBVA'] as const).map(m => (
                         <button key={m} type="button" onClick={() => setSettleMethod(m)}
-                          className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-medium border transition-colors ${
-                            settleMethod === m ? 'bg-[#8B5CF6] text-white border-[#8B5CF6]' : 'bg-white text-slate-500 border-slate-200'
-                          }`}>
+                          className={`flex-1 h-11 rounded-xl text-xs font-medium border transition-colors ${settleMethod === m ? 'bg-[#8B5CF6] text-white border-[#8B5CF6]' : 'bg-white text-slate-500 border-slate-200'}`}>
                           {m === 'Efectivo' ? '💵 Efectivo' : '🏦 BBVA'}
                         </button>
                       ))}
                     </div>
-                    <p className="text-[10px] text-slate-400 mt-1.5">
-                      Entra en: {cajaLabel(cajaDeComision(settleMethod))}
-                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1.5">Entra en: {cajaLabel(cajaDeComision(settleMethod))}</p>
                   </div>
                   <div className="flex gap-3">
-                    <button onClick={() => { setShowSettleModal(false); setSettleTargetId(null); }} className="flex-1 py-3 border border-slate-200 rounded-xl text-sm text-slate-600">Cancelar</button>
-                    <button onClick={handleSettleCommissions} className="flex-1 py-3 bg-[#8B5CF6] text-white rounded-xl text-sm font-semibold">Confirmar cobro</button>
+                    <button disabled={busy} onClick={() => { setShowSettleModal(false); setSettleTargetId(null); }}
+                      className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">Cancelar</button>
+                    <button disabled={busy} onClick={handleSettleCommissions}
+                      className="flex-1 h-12 bg-[#8B5CF6] text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+                      {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {busy ? 'Guardando...' : 'Confirmar'}
+                    </button>
                   </div>
                 </div>
               </motion.div>
             </motion.div>
           );
         })()}
+      </AnimatePresence>
+
+      {/* Confirmación propia. No usamos confirm(), que Safari suprime
+          en las apps abiertas desde la pantalla de inicio. */}
+      <AnimatePresence>
+        {confirmDialog && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4"
+            onClick={e => { if (e.target === e.currentTarget && !busy) setConfirmDialog(null); }}>
+            <motion.div initial={{ y: '100%', opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: '100%', opacity: 0 }}
+              transition={{ type: 'spring', damping: 30 }}
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6"
+              onClick={e => e.stopPropagation()}>
+              <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
+              <h3 className="font-semibold text-slate-900 mb-2">{confirmDialog.titulo}</h3>
+              <p className="text-sm text-slate-600 mb-5 leading-relaxed">{confirmDialog.mensaje}</p>
+              <div className="flex gap-3">
+                <button disabled={busy} onClick={() => setConfirmDialog(null)}
+                  className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">
+                  Cancelar
+                </button>
+                <button disabled={busy}
+                  onClick={async () => {
+                    if (busy) return;
+                    setBusy(true);
+                    try {
+                      await confirmDialog.accion();
+                      setConfirmDialog(null);
+                    } catch (err: any) {
+                      alert(err?.message || 'No se pudo completar la operación');
+                    } finally { setBusy(false); }
+                  }}
+                  className={`flex-1 h-12 rounded-xl text-sm font-semibold text-white disabled:opacity-60 flex items-center justify-center gap-2 active:scale-[0.98] transition-transform ${confirmDialog.peligro ? 'bg-red-500' : 'bg-[#E05A2B]'}`}>
+                  {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {busy ? 'Un momento...' : confirmDialog.etiqueta}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );
