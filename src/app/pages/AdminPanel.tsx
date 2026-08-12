@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale, Calculator, UserX, KeyRound, Loader2 } from 'lucide-react';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale, Calculator, UserX, KeyRound, Loader2, Building2 } from 'lucide-react';
+import { ClientesTab } from '../components/ClientesTab';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -349,7 +350,7 @@ export function AdminPanel() {
   const [formError, setFormError] = useState('');
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
-  const [activeTab, setActiveTab] = useState<'today' | 'calc' | 'calendar' | 'expenses' | 'stats' | 'cuadre'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'calc' | 'calendar' | 'expenses' | 'stats' | 'cuadre' | 'clientes'>('today');
   const [showPayModal, setShowPayModal] = useState(false);
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('Efectivo');
@@ -1862,6 +1863,9 @@ export function AdminPanel() {
           );
         })()}
 
+        {/* CLIENTES */}
+        {activeTab === 'clientes' && <ClientesTab token={token} />}
+
       </div>
 
       {/* Navegación inferior */}
@@ -1871,14 +1875,15 @@ export function AdminPanel() {
             { id: 'today', icon: Home, label: 'Hoy' },
             { id: 'calc', icon: Calculator, label: 'Calcular' },
             { id: 'calendar', icon: CalendarDays, label: 'Calendario' },
+            { id: 'clientes', icon: Building2, label: 'Clientes' },
             { id: 'expenses', icon: Wallet, label: 'Gastos' },
             { id: 'cuadre', icon: Scale, label: 'Cuadre' },
             { id: 'stats', icon: BarChart2, label: 'Stats' },
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id as any)}
-              className={`flex-1 flex flex-col items-center justify-center h-14 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
-              <tab.icon className="w-5 h-5" />
-              <span className="text-[9px] font-medium">{tab.label}</span>
+              className={`flex-1 min-w-0 flex flex-col items-center justify-center h-14 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
+              <tab.icon className="w-5 h-5 flex-shrink-0" />
+              <span className="text-[8px] font-medium truncate max-w-full px-0.5">{tab.label}</span>
             </button>
           ))}
         </div>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LogOut, Plus, X, Users, Calendar, CalendarDays, Home, Settings, Trash2, Edit2,
-         ChevronLeft, ChevronRight, Loader2, Wallet, Tag, CheckCircle, UserX, Building2 } from 'lucide-react';
+         ChevronLeft, ChevronRight, Loader2, Wallet, Tag, CheckCircle, UserX, Building2, Receipt } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
@@ -16,6 +16,7 @@ const TIPOS = [
 const CANALES = ['Directo', 'WhatsApp', 'Airbnb', 'Booking', 'Instagram', 'Facebook'];
 const METODOS = ['Efectivo', 'Transferencia', 'Bizum', 'PayPal', 'Tarjeta'];
 const METODOS_EFECTIVO = ['Efectivo'];
+const CATEGORIAS = ['🧹 Limpieza', '🔧 Mantenimiento', '💡 Suministros', '🛋️ Mobiliario', '🏠 Alquiler', '📋 Otros'];
 
 interface Room {
   id: number; property_id: number; name: string;
@@ -31,6 +32,12 @@ interface Rate {
   net_price: number; min_net_price?: number | null; min_nights: number;
 }
 interface Account { id: number; name: string; slug: string; currency?: string }
+
+interface Gasto {
+  id: number; property_ref: number; property_name?: string;
+  category: string; description: string; amount: number; date: string;
+  payment_method?: string;
+}
 
 interface Reserva {
   id: number; room_id: number; room_name: string; guest_name: string;
@@ -110,9 +117,29 @@ export function ClientPanel() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [rates, setRates] = useState<Rate[]>([]);
   const [reservas, setReservas] = useState<Reserva[]>([]);
+  const [gastos, setGastos] = useState<Gasto[]>([]);
   const [cargando, setCargando] = useState(true);
 
-  const [tab, setTab] = useState<'calendar' | 'list' | 'money' | 'settings'>('calendar');
+  const [tab, setTab] = useState<'calendar' | 'list' | 'expenses' | 'money' | 'settings'>('calendar');
+
+  const [showGasto, setShowGasto] = useState(false);
+  const [editGasto, setEditGasto] = useState<number | null>(null);
+  const [gastoForm, setGastoForm] = useState({
+    property_ref: 0, category: '🔧 Mantenimiento', description: '',
+    amount: '', date: toDateStr(new Date()), payment_method: 'Efectivo',
+  });
+
+  // Efectivo contado en el cuadre, guardado en el dispositivo
+  const [conteos, setConteos] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('client_conteos') || '{}'); } catch { return {}; }
+  });
+  function setConteo(key: string, val: string) {
+    setConteos(prev => {
+      const next = { ...prev, [key]: val };
+      try { localStorage.setItem('client_conteos', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
   const [busy, setBusy] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
@@ -174,9 +201,10 @@ export function ClientPanel() {
   async function cargarTodo() {
     setCargando(true);
     try {
-      const [cfgRes, resRes] = await Promise.all([
+      const [cfgRes, resRes, gasRes] = await Promise.all([
         api('/client/config'),
         api('/client/reservations'),
+        api('/client/expenses'),
       ]);
       if (cfgRes.status === 401 || resRes.status === 401) { salir(); return; }
 
@@ -199,6 +227,14 @@ export function ClientPanel() {
         num_persons: Number(r.num_persons) || 1,
         no_show: !!r.no_show,
       })));
+
+      if (gasRes.ok) {
+        const g = await gasRes.json();
+        setGastos(g.map((x: any) => ({
+          ...x, amount: Number(x.amount) || 0, date: onlyDate(x.date),
+          property_ref: Number(x.property_ref) || 0,
+        })));
+      }
     } catch {}
     finally { setCargando(false); }
   }
@@ -384,13 +420,26 @@ export function ClientPanel() {
   }
 
   // ── Pisos y habitaciones ──
+  // Muestra lo que respondió el servidor, no un texto genérico:
+  // sin el motivo real, un fallo aquí es imposible de diagnosticar.
+  async function errorDe(res: Response, porDefecto: string): Promise<string> {
+    try {
+      const d = await res.json();
+      return d?.error ? `${d.error} (${res.status})` : `${porDefecto} (${res.status})`;
+    } catch {
+      return `${porDefecto} (${res.status})`;
+    }
+  }
+
   async function crearPiso(nombre: string, color: string) {
     if (busy) return;
     setBusy(true);
     try {
       const res = await api('/client/properties', { method: 'POST', body: JSON.stringify({ name: nombre, color }) });
-      if (!res.ok) { alert('No se pudo crear el piso'); return; }
+      if (!res.ok) { alert(await errorDe(res, 'No se pudo crear el piso')); return; }
       await cargarTodo();
+    } catch {
+      alert('No se pudo conectar con el servidor');
     } finally { setBusy(false); }
   }
 
@@ -402,8 +451,10 @@ export function ClientPanel() {
         method: 'POST',
         body: JSON.stringify({ property_id: propertyId, name: nombre, room_type: tipo, max_persons: pax }),
       });
-      if (!res.ok) { alert('No se pudo crear la habitación'); return; }
+      if (!res.ok) { alert(await errorDe(res, 'No se pudo crear la habitación')); return; }
       await cargarTodo();
+    } catch {
+      alert('No se pudo conectar con el servidor');
     } finally { setBusy(false); }
   }
 
@@ -432,6 +483,39 @@ export function ClientPanel() {
       etiqueta: 'Quitar', peligro: true,
       accion: async () => {
         const res = await api(`/client/properties/${p.id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        cargarTodo();
+      },
+    });
+  }
+
+  // ── Gastos ──
+  async function guardarGasto(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const cuerpo = { ...gastoForm, property_ref: Number(gastoForm.property_ref), amount: Number(gastoForm.amount) };
+      const res = await api(
+        editGasto ? `/client/expenses/${editGasto}` : '/client/expenses',
+        { method: editGasto ? 'PUT' : 'POST', body: JSON.stringify(cuerpo) }
+      );
+      if (!res.ok) { alert(await errorDe(res, 'No se pudo guardar el gasto')); return; }
+      setShowGasto(false); setEditGasto(null);
+      setGastoForm(g => ({ ...g, description: '', amount: '' }));
+      cargarTodo();
+    } catch {
+      alert('No se pudo conectar con el servidor');
+    } finally { setBusy(false); }
+  }
+
+  function pedirBorrarGasto(g: Gasto) {
+    setConfirmar({
+      titulo: 'Eliminar gasto',
+      mensaje: `Se borrará "${g.description}" de ${g.amount.toFixed(0)}€ y dejará de restar en tu balance.`,
+      etiqueta: 'Eliminar', peligro: true,
+      accion: async () => {
+        const res = await api(`/client/expenses/${g.id}`, { method: 'DELETE' });
         if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
         cargarTodo();
       },
@@ -766,6 +850,71 @@ export function ClientPanel() {
           );
         })()}
 
+        {/* GASTOS */}
+        {tab === 'expenses' && (() => {
+          const delMes = gastos.filter(g => g.date.slice(0, 7) === mesDinero)
+            .sort((a, b) => b.date.localeCompare(a.date));
+          const total = delMes.reduce((a, g) => a + g.amount, 0);
+          return (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-slate-100 flex items-center justify-between px-2 py-2">
+                <IconBtn onClick={() => setMesDinero(m => sumarMeses(m, -1))} title="Mes anterior" className="text-slate-500 bg-slate-50">
+                  <ChevronLeft className="w-4 h-4" />
+                </IconBtn>
+                <p className="text-sm font-semibold text-slate-800 capitalize">{fmtMes(mesDinero)}</p>
+                <IconBtn onClick={() => setMesDinero(m => sumarMeses(m, 1))} title="Mes siguiente" className="text-slate-500 bg-slate-50">
+                  <ChevronRight className="w-4 h-4" />
+                </IconBtn>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-red-100 p-4 text-center">
+                <p className="text-[10px] text-slate-400 mb-1">Gastos del mes</p>
+                <p className="text-3xl font-bold text-red-500">{total.toFixed(0)}€</p>
+              </div>
+
+              <button onClick={() => {
+                  setGastoForm(g => ({ ...g, property_ref: properties[0]?.id || 0, date: toDateStr(new Date()) }));
+                  setEditGasto(null); setShowGasto(true);
+                }}
+                className="w-full flex items-center justify-center gap-2 h-12 bg-white border border-dashed border-slate-300 rounded-2xl text-sm text-slate-500 active:scale-[0.98] transition-transform">
+                <Plus className="w-4 h-4" /> Añadir gasto
+              </button>
+
+              <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+                {delMes.length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin gastos este mes</p>}
+                <div className="divide-y divide-slate-100">
+                  {delMes.map(g => (
+                    <div key={g.id} className="flex items-center gap-2 p-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                          <span className="text-xs text-slate-500">{g.category}</span>
+                          <span className="text-[10px] text-slate-400">{fmtDate(g.date)}</span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{g.payment_method}</span>
+                        </div>
+                        <p className="text-sm font-medium text-slate-900 truncate">{g.description}</p>
+                        <p className="text-[10px] text-slate-400">{g.property_name}</p>
+                      </div>
+                      <span className="text-sm font-bold text-red-500 flex-shrink-0">−{g.amount.toFixed(0)}€</span>
+                      <IconBtn onClick={() => {
+                          setGastoForm({
+                            property_ref: g.property_ref, category: g.category, description: g.description,
+                            amount: String(g.amount), date: g.date, payment_method: g.payment_method || 'Efectivo',
+                          });
+                          setEditGasto(g.id); setShowGasto(true);
+                        }} title="Editar" className="text-slate-400 bg-slate-50">
+                        <Edit2 className="w-4 h-4" />
+                      </IconBtn>
+                      <IconBtn onClick={() => pedirBorrarGasto(g)} title="Eliminar" className="text-red-400 bg-red-50">
+                        <Trash2 className="w-4 h-4" />
+                      </IconBtn>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* DINERO */}
         {tab === 'money' && (() => {
           // Cada cobro va a su sitio según cómo se pagó: efectivo por un
@@ -786,10 +935,28 @@ export function ClientPanel() {
             });
           });
 
+          // Los gastos salen de la caja con la que se pagaron.
+          gastos.forEach(g => {
+            movs.push({
+              key: `g${g.id}`, fecha: g.date, concepto: g.description,
+              metodo: `${g.category} · ${g.payment_method || '—'}`,
+              importe: -g.amount, efectivo: esEfectivo(g.payment_method),
+            });
+          });
+
           const delMes = movs.filter(m => m.fecha.slice(0, 7) === mesDinero).sort((a, b) => a.fecha.localeCompare(b.fecha));
+          const previos = movs.filter(m => m.fecha.slice(0, 7) < mesDinero);
+
           const efectivo = delMes.filter(m => m.efectivo).reduce((a, m) => a + m.importe, 0);
           const banco = delMes.filter(m => !m.efectivo).reduce((a, m) => a + m.importe, 0);
+          const inicialEfectivo = previos.filter(m => m.efectivo).reduce((a, m) => a + m.importe, 0);
+          const inicialBanco = previos.filter(m => !m.efectivo).reduce((a, m) => a + m.importe, 0);
           const esteMes = mesDinero === mesActual();
+
+          const cajas = [
+            { id: 'efectivo', label: '💵 Efectivo', inicial: inicialEfectivo, neto: efectivo, etiqueta: 'Efectivo contado' },
+            { id: 'banco',    label: '🏦 Banco',    inicial: inicialBanco,    neto: banco,    etiqueta: 'Saldo real en el banco' },
+          ];
 
           return (
             <div className="space-y-4">
@@ -806,42 +973,80 @@ export function ClientPanel() {
                 </IconBtn>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-white rounded-2xl border border-emerald-200 p-4">
-                  <p className="text-[10px] text-slate-400 mb-1">💵 En efectivo</p>
-                  <p className="text-2xl font-bold text-emerald-600">{efectivo.toFixed(0)}€</p>
-                </div>
-                <div className="bg-white rounded-2xl border border-slate-200 p-4">
-                  <p className="text-[10px] text-slate-400 mb-1">🏦 En el banco</p>
-                  <p className="text-2xl font-bold text-slate-700">{banco.toFixed(0)}€</p>
-                </div>
-              </div>
+              {cajas.map(c => {
+                const teorico = c.inicial + c.neto;
+                const key = `${mesDinero}:${c.id}`;
+                const contadoRaw = conteos[key] ?? '';
+                const contado = contadoRaw === '' ? null : Number(contadoRaw);
+                const dif = contado === null ? null : contado - teorico;
+                const suyos = delMes.filter(m => (c.id === 'efectivo') === m.efectivo);
 
-              <div className="flex justify-between text-sm p-4 bg-slate-900 rounded-2xl">
-                <span className="font-semibold text-white">Total del mes</span>
-                <span className="font-bold text-lg text-white">{(efectivo + banco).toFixed(0)}€</span>
-              </div>
-
-              <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50">
-                  <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Cobros ({delMes.length})</span>
-                </div>
-                {delMes.length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin cobros este mes</p>}
-                <div className="divide-y divide-slate-100">
-                  {delMes.map(m => (
-                    <div key={m.key} className="flex items-center gap-2 px-4 py-3">
-                      <span className="text-[10px] text-slate-400 w-12 flex-shrink-0">{fmtDate(m.fecha)}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium text-slate-800 truncate">{m.concepto}</p>
-                        <p className="text-[10px] text-slate-400 truncate">{m.metodo}</p>
-                      </div>
-                      <span className={`text-xs font-semibold flex-shrink-0 ${m.efectivo ? 'text-emerald-600' : 'text-slate-600'}`}>
-                        +{m.importe.toFixed(0)}€
+                return (
+                  <div key={c.id} className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
+                      <span className="text-sm font-semibold text-slate-800">{c.label}</span>
+                      <span className={`text-sm font-bold ${c.neto >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {c.neto >= 0 ? '+' : ''}{c.neto.toFixed(0)}€
                       </span>
                     </div>
-                  ))}
-                </div>
+
+                    <div className="px-4 py-3 flex justify-between text-xs border-b border-slate-100">
+                      <span className="text-slate-500">Saldo al empezar el mes</span>
+                      <span className="font-semibold text-slate-700">{c.inicial.toFixed(0)}€</span>
+                    </div>
+
+                    <div className="px-4 py-3">
+                      {suyos.length === 0 && <p className="text-xs text-slate-400">Sin movimientos este mes</p>}
+                      <div className="space-y-1.5">
+                        {suyos.map(m => (
+                          <div key={m.key} className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 w-12 flex-shrink-0">{fmtDate(m.fecha)}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-slate-800 truncate">{m.concepto}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{m.metodo}</p>
+                            </div>
+                            <span className={`text-xs font-semibold flex-shrink-0 ${m.importe >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                              {m.importe >= 0 ? '+' : '−'}{Math.abs(m.importe).toFixed(0)}€
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="font-semibold text-slate-700">Debería haber</span>
+                        <span className="font-bold text-slate-900">{teorico.toFixed(0)}€</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-500 flex-1">{c.etiqueta}</label>
+                        <input type="number" inputMode="decimal" value={contadoRaw}
+                          onChange={e => setConteo(key, e.target.value)} placeholder="0"
+                          className="w-28 border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right bg-white focus:outline-none focus:border-[#E05A2B]" />
+                      </div>
+                      {dif !== null && (
+                        <div className={`flex justify-between items-center rounded-xl px-3 py-2.5 ${Math.abs(dif) < 0.5 ? 'bg-emerald-100' : 'bg-red-100'}`}>
+                          <span className={`text-xs font-semibold ${Math.abs(dif) < 0.5 ? 'text-emerald-700' : 'text-red-700'}`}>
+                            {Math.abs(dif) < 0.5 ? 'Cuadra' : dif > 0 ? 'Sobra' : 'Falta'}
+                          </span>
+                          <span className={`text-sm font-bold ${Math.abs(dif) < 0.5 ? 'text-emerald-700' : 'text-red-700'}`}>
+                            {Math.abs(dif) < 0.5 ? '0€' : `${dif > 0 ? '+' : ''}${dif.toFixed(0)}€`}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div className="flex justify-between text-sm p-4 bg-slate-900 rounded-2xl">
+                <span className="font-semibold text-white">Total al cierre</span>
+                <span className="font-bold text-lg text-white">
+                  {(inicialEfectivo + inicialBanco + efectivo + banco).toFixed(0)}€
+                </span>
               </div>
+
+              <p className="text-[10px] text-slate-400 px-1">El importe contado se guarda en este dispositivo, no en el servidor.</p>
             </div>
           );
         })()}
@@ -868,7 +1073,8 @@ export function ClientPanel() {
           {[
             { id: 'calendar', icon: CalendarDays, label: 'Calendario' },
             { id: 'list', icon: Calendar, label: 'Reservas' },
-            { id: 'money', icon: Wallet, label: 'Dinero' },
+            { id: 'expenses', icon: Receipt, label: 'Gastos' },
+            { id: 'money', icon: Wallet, label: 'Cuadre' },
             { id: 'settings', icon: Settings, label: 'Ajustes' },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id as any)}
@@ -1150,6 +1356,103 @@ export function ClientPanel() {
         )}
       </AnimatePresence>
 
+      {/* Formulario de gasto */}
+      <AnimatePresence>
+        {showGasto && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center"
+            onClick={e => { if (e.target === e.currentTarget && !busy) { setShowGasto(false); setEditGasto(null); } }}>
+            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-md shadow-xl max-h-[90vh] flex flex-col"
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 flex-shrink-0">
+                <h3 className="font-semibold text-slate-900">{editGasto ? 'Editar gasto' : 'Nuevo gasto'}</h3>
+                <IconBtn onClick={() => { if (!busy) { setShowGasto(false); setEditGasto(null); } }} title="Cerrar" className="text-slate-500 -mr-2">
+                  <X className="w-5 h-5" />
+                </IconBtn>
+              </div>
+
+              <form onSubmit={guardarGasto} className="p-4 space-y-4 overflow-y-auto flex-1">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Piso *</label>
+                  <div className="flex flex-wrap gap-2">
+                    {properties.map(p => (
+                      <button key={p.id} type="button" onClick={() => setGastoForm(g => ({ ...g, property_ref: p.id }))}
+                        className="h-11 px-3 rounded-xl text-xs font-semibold border transition-all"
+                        style={gastoForm.property_ref === p.id
+                          ? { background: p.color, color: 'white', borderColor: p.color }
+                          : { background: 'white', color: '#64748b', borderColor: '#e2e8f0' }}>
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Categoría</label>
+                  <div className="flex flex-wrap gap-2">
+                    {CATEGORIAS.map(c => (
+                      <button key={c} type="button" onClick={() => setGastoForm(g => ({ ...g, category: c }))}
+                        className={`h-10 px-3 rounded-xl text-xs font-medium border transition-colors ${gastoForm.category === c ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Descripción *</label>
+                  <input required value={gastoForm.description}
+                    onChange={e => setGastoForm(g => ({ ...g, description: e.target.value }))}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]"
+                    placeholder="Ej: Limpieza de junio" />
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">¿Cómo lo pagaste?</label>
+                  <div className="flex flex-wrap gap-2">
+                    {METODOS.map(m => (
+                      <button key={m} type="button" onClick={() => setGastoForm(g => ({ ...g, payment_method: m }))}
+                        className={`h-10 px-3 rounded-xl text-xs font-medium border transition-colors ${gastoForm.payment_method === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1.5">
+                    {esEfectivo(gastoForm.payment_method) ? 'Sale de tu efectivo' : 'Sale de tu banco'}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€) *</label>
+                    <input required type="number" min="0" step="0.01" value={gastoForm.amount}
+                      onChange={e => setGastoForm(g => ({ ...g, amount: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">Fecha *</label>
+                    <input required type="date" value={gastoForm.date}
+                      onChange={e => setGastoForm(g => ({ ...g, date: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pb-2">
+                  <button type="button" disabled={busy} onClick={() => { setShowGasto(false); setEditGasto(null); }}
+                    className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">Cancelar</button>
+                  <button type="submit" disabled={busy || !gastoForm.property_ref}
+                    className="flex-1 h-12 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+                    {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {busy ? 'Guardando...' : editGasto ? 'Guardar' : 'Añadir gasto'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Confirmación */}
       <AnimatePresence>
         {confirmar && (
@@ -1208,8 +1511,9 @@ function Onboarding({ account, properties, busy, onCrearPiso, onCrearHabitacion,
     if (pisoActivo === null && properties.length > 0) setPisoActivo(properties[0].id);
   }, [properties, pisoActivo]);
 
+  const [otroPiso, setOtroPiso] = useState(false);
   const piso = properties.find(p => p.id === pisoActivo) || properties[0];
-  const paso = properties.length === 0 ? 1 : 2;
+  const paso = (properties.length === 0 || otroPiso) ? 1 : 2;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -1248,11 +1552,21 @@ function Onboarding({ account, properties, busy, onCrearPiso, onCrearHabitacion,
             </div>
 
             <button disabled={busy || !nombrePiso.trim()}
-              onClick={() => onCrearPiso(nombrePiso.trim(), color)}
+              onClick={async () => {
+                await onCrearPiso(nombrePiso.trim(), color);
+                setNombrePiso(''); setOtroPiso(false);
+              }}
               className="w-full h-12 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
               {busy && <Loader2 className="w-4 h-4 animate-spin" />}
               Continuar
             </button>
+
+            {properties.length > 0 && (
+              <button onClick={() => { setNombrePiso(''); setOtroPiso(false); }}
+                className="w-full mt-2 h-11 text-xs text-slate-500">
+                Volver a mis habitaciones
+              </button>
+            )}
           </div>
         )}
 
@@ -1314,16 +1628,16 @@ function Onboarding({ account, properties, busy, onCrearPiso, onCrearHabitacion,
               </button>
             </div>
 
-            {piso.rooms.length > 0 && (
+            {properties.some(p => p.rooms.length > 0) && (
               <button onClick={onListo}
                 className="w-full h-12 bg-[#E05A2B] text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-transform">
                 Listo, ir a mi calendario
               </button>
             )}
 
-            <button onClick={() => { setNombrePiso(''); setPisoActivo(null); }}
-              className="w-full text-xs text-slate-400 py-2">
-              o añade otro piso desde Ajustes
+            <button onClick={() => { setNombrePiso(''); setOtroPiso(true); }}
+              className="w-full h-11 flex items-center justify-center gap-2 text-xs text-slate-500 border border-dashed border-slate-300 rounded-xl bg-white active:scale-[0.98] transition-transform">
+              <Home className="w-4 h-4" /> Añadir otro piso
             </button>
           </>
         )}
