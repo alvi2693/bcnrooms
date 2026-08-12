@@ -7,6 +7,7 @@ import { RoomPage } from "./pages/RoomPage";
 import { AdminPanel } from "./pages/AdminPanel";
 import { OwnerPanel } from "./pages/OwnerPanel";
 import { CalendarPanel } from "./pages/CalendarPanel";
+import { ClientPanel } from "./pages/ClientPanel";
 
 export const router = createBrowserRouter([
   {
@@ -20,6 +21,10 @@ export const router = createBrowserRouter([
   {
     path: "/calendario",
     Component: CalendarPanel,
+  },
+  {
+    path: "/panel",
+    Component: ClientPanel,
   },
   {
     path: "/",
