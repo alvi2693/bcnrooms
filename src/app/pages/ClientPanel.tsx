@@ -436,6 +436,7 @@ export function ClientPanel() {
     setBusy(true);
     try {
       const res = await api('/client/properties', { method: 'POST', body: JSON.stringify({ name: nombre, color }) });
+      if (res.status === 401) { alert('Tu sesión caducó. Vuelve a entrar.'); salir(); return; }
       if (!res.ok) { alert(await errorDe(res, 'No se pudo crear el piso')); return; }
       await cargarTodo();
     } catch {
@@ -451,6 +452,7 @@ export function ClientPanel() {
         method: 'POST',
         body: JSON.stringify({ property_id: propertyId, name: nombre, room_type: tipo, max_persons: pax }),
       });
+      if (res.status === 401) { alert('Tu sesión caducó. Vuelve a entrar.'); salir(); return; }
       if (!res.ok) { alert(await errorDe(res, 'No se pudo crear la habitación')); return; }
       await cargarTodo();
     } catch {
