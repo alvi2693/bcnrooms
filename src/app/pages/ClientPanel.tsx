@@ -33,6 +33,12 @@ interface Rate {
 }
 interface Account { id: number; name: string; slug: string; currency?: string }
 
+interface Cuota {
+  id: number; reservation_id: number; period_start: string;
+  amount: number; paid_at?: string | null; method?: string | null;
+  guest_name?: string; room_id?: number; room_name?: string;
+}
+
 interface Gasto {
   id: number; property_ref: number; property_name?: string;
   category: string; description: string; amount: number; date: string;
@@ -48,6 +54,7 @@ interface Reserva {
   deposit_amount?: number; deposit_method?: string;
   checkin_amount?: number; checkin_method?: string;
   channel?: string; notes?: string | null; no_show?: boolean;
+  rental_type?: string; monthly_rate?: number;
 }
 
 function addDays(date: Date, days: number): Date { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
@@ -80,6 +87,21 @@ function fmtMes(ym: string): string {
   return new Date(y, m - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 }
 function esEfectivo(m?: string): boolean { return METODOS_EFECTIVO.includes((m || '').trim()); }
+function esMensual(r: { rental_type?: string }): boolean { return r.rental_type === 'monthly'; }
+
+// Suma meses conservando el día, ajustando si el mes destino es más corto.
+function sumarMesesFecha(ymd: string, n: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, m - 1 + n, 1);
+  const ultimo = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+  dt.setDate(Math.min(d, ultimo));
+  return toDateStr(dt);
+}
+function fmtMesCorto(f: string): string {
+  if (!f) return '';
+  return parseYMD(f).toLocaleDateString('es-ES', { month: 'short', year: '2-digit' });
+}
+
 function pendienteDe(r: Reserva): number {
   if (r.no_show) return 0;
   return Math.max(0, (r.price_total || 0) - (r.price_paid || 0));
@@ -103,6 +125,7 @@ const formVacio = {
   price_per_night: '', price_total: '',
   deposit_amount: '', deposit_method: 'Transferencia',
   checkin_amount: '', checkin_method: 'Efectivo',
+  rental_type: 'nightly', monthly_rate: '', months_count: '1',
   channel: 'Directo', notes: '',
 };
 
@@ -118,6 +141,10 @@ export function ClientPanel() {
   const [rates, setRates] = useState<Rate[]>([]);
   const [reservas, setReservas] = useState<Reserva[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
+  const [cuotas, setCuotas] = useState<Cuota[]>([]);
+  const [cuotaModal, setCuotaModal] = useState<Cuota | null>(null);
+  const [cuotaMetodo, setCuotaMetodo] = useState('Efectivo');
+  const [cuotaImporte, setCuotaImporte] = useState('');
   const [cargando, setCargando] = useState(true);
 
   const [tab, setTab] = useState<'calendar' | 'list' | 'expenses' | 'money' | 'settings'>('calendar');
@@ -201,10 +228,11 @@ export function ClientPanel() {
   async function cargarTodo() {
     setCargando(true);
     try {
-      const [cfgRes, resRes, gasRes] = await Promise.all([
+      const [cfgRes, resRes, gasRes, cuoRes] = await Promise.all([
         api('/client/config'),
         api('/client/reservations'),
         api('/client/expenses'),
+        api('/client/rent-payments'),
       ]);
       if (cfgRes.status === 401 || resRes.status === 401) { salir(); return; }
 
@@ -226,6 +254,8 @@ export function ClientPanel() {
         checkin_amount: Number(r.checkin_amount) || 0,
         num_persons: Number(r.num_persons) || 1,
         no_show: !!r.no_show,
+        rental_type: r.rental_type || 'nightly',
+        monthly_rate: Number(r.monthly_rate) || 0,
       })));
 
       if (gasRes.ok) {
@@ -233,6 +263,16 @@ export function ClientPanel() {
         setGastos(g.map((x: any) => ({
           ...x, amount: Number(x.amount) || 0, date: onlyDate(x.date),
           property_ref: Number(x.property_ref) || 0,
+        })));
+      }
+
+      if (cuoRes.ok) {
+        const c = await cuoRes.json();
+        setCuotas(c.map((x: any) => ({
+          ...x, amount: Number(x.amount) || 0,
+          period_start: onlyDate(x.period_start),
+          paid_at: x.paid_at ? onlyDate(x.paid_at) : null,
+          room_id: Number(x.room_id),
         })));
       }
     } catch {}
@@ -344,6 +384,9 @@ export function ClientPanel() {
         price_per_night: form.price_per_night ? Number(form.price_per_night) : null,
         deposit_amount: Number(form.deposit_amount) || 0,
         checkin_amount: Number(form.checkin_amount) || 0,
+        rental_type: form.rental_type,
+        monthly_rate: form.rental_type === 'monthly' ? Number(form.monthly_rate) || 0 : null,
+        months_count: form.rental_type === 'monthly' ? Number(form.months_count) || 1 : null,
       };
       const res = await api(
         editId ? `/client/reservations/${editId}` : '/client/reservations',
@@ -374,6 +417,9 @@ export function ClientPanel() {
       deposit_method: r.deposit_method || 'Transferencia',
       checkin_amount: r.checkin_amount ? String(r.checkin_amount) : '',
       checkin_method: r.checkin_method || 'Efectivo',
+      rental_type: r.rental_type || 'nightly',
+      monthly_rate: r.monthly_rate ? String(r.monthly_rate) : '',
+      months_count: String(cuotasDe(r.id).length || 1),
       channel: r.channel || 'Directo', notes: r.notes || '',
     });
     setEditId(r.id); setSelected(null); setFormError(''); setShowForm(true);
@@ -491,6 +537,95 @@ export function ClientPanel() {
     });
   }
 
+  // ── Mensualidades ──
+  const cuotasDe = (resId: number) =>
+    cuotas.filter(c => c.reservation_id === resId).sort((a, b) => a.period_start.localeCompare(b.period_start));
+
+  const cuotasVencidas = useMemo(
+    () => cuotas.filter(c => !c.paid_at && c.period_start <= hoy).sort((a, b) => a.period_start.localeCompare(b.period_start)),
+    [cuotas, hoy]
+  );
+
+  async function confirmarCobroCuota() {
+    if (!cuotaModal || busy) return;
+    setBusy(true);
+    try {
+      const res = await api(`/client/rent-payments/${cuotaModal.id}/pay`, {
+        method: 'PATCH',
+        body: JSON.stringify({ method: cuotaMetodo, amount: cuotaImporte === '' ? undefined : Number(cuotaImporte) }),
+      });
+      if (!res.ok) { alert(await errorDe(res, 'No se pudo registrar el cobro')); return; }
+      setCuotaModal(null); setCuotaImporte('');
+      cargarTodo();
+    } catch {
+      alert('No se pudo conectar con el servidor');
+    } finally { setBusy(false); }
+  }
+
+  function pedirDeshacerCuota(c: Cuota) {
+    setConfirmar({
+      titulo: 'Deshacer cobro',
+      mensaje: `La mensualidad de ${fmtMesCorto(c.period_start)} volverá a figurar como pendiente.`,
+      etiqueta: 'Deshacer',
+      accion: async () => {
+        const res = await api(`/client/rent-payments/${c.id}/unpay`, { method: 'PATCH' });
+        if (!res.ok) throw new Error(`El servidor respondió ${res.status}`);
+        cargarTodo();
+      },
+    });
+  }
+
+  function pedirProrroga(r: Reserva) {
+    setConfirmar({
+      titulo: 'Añadir un mes',
+      mensaje: `Se alarga la estancia de ${r.guest_name} un mes más y se crea una mensualidad de ${(r.monthly_rate || 0).toFixed(0)}€ pendiente de cobro.`,
+      etiqueta: 'Añadir mes',
+      accion: async () => {
+        const res = await api(`/client/reservations/${r.id}/extend-month`, {
+          method: 'POST', body: JSON.stringify({}),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || `El servidor respondió ${res.status}`);
+        setSelected(null); cargarTodo();
+      },
+    });
+  }
+
+  // Cambia entre noches y meses, recalculando salida y total.
+  function setModalidad(tipo: 'nightly' | 'monthly') {
+    setForm(f => {
+      if (tipo === 'nightly') return { ...f, rental_type: 'nightly', monthly_rate: '', months_count: '1' };
+      const meses = Number(f.months_count) || 1;
+      const rate = Number(f.monthly_rate) || 0;
+      return {
+        ...f, rental_type: 'monthly',
+        check_out: f.check_in ? sumarMesesFecha(f.check_in, meses) : f.check_out,
+        price_total: rate > 0 ? (rate * meses).toFixed(2) : f.price_total,
+        price_per_night: '', checkin_amount: '',
+      };
+    });
+  }
+
+  function setMeses(n: number) {
+    const meses = Math.max(1, n);
+    setForm(f => {
+      const rate = Number(f.monthly_rate) || 0;
+      return {
+        ...f, months_count: String(meses),
+        check_out: f.check_in ? sumarMesesFecha(f.check_in, meses) : f.check_out,
+        price_total: rate > 0 ? (rate * meses).toFixed(2) : f.price_total,
+      };
+    });
+  }
+
+  function setImporteMes(val: string) {
+    setForm(f => {
+      const meses = Number(f.months_count) || 1;
+      const rate = parseFloat(val) || 0;
+      return { ...f, monthly_rate: val, price_total: rate > 0 ? (rate * meses).toFixed(2) : f.price_total };
+    });
+  }
+
   // ── Gastos ──
   async function guardarGasto(e: React.FormEvent) {
     e.preventDefault();
@@ -559,6 +694,11 @@ export function ClientPanel() {
   function cambiarFecha(campo: 'check_in' | 'check_out', valor: string) {
     setForm(f => {
       const u = { ...f, [campo]: valor };
+      if (u.rental_type === 'monthly') {
+        // La salida la marcan los meses, no el usuario.
+        if (campo === 'check_in' && valor) u.check_out = sumarMesesFecha(valor, Number(u.months_count) || 1);
+        return u;
+      }
       const n = noches(campo === 'check_in' ? valor : f.check_in, campo === 'check_out' ? valor : f.check_out);
       const ppn = parseFloat(f.price_per_night) || 0;
       return { ...u, price_total: n > 0 && ppn > 0 ? (ppn * n).toFixed(2) : u.price_total };
@@ -670,6 +810,30 @@ export function ClientPanel() {
       </div>
 
       <div className="px-4 py-3">
+
+        {/* Mensualidades vencidas: lo primero que hay que cobrar */}
+        {cuotasVencidas.length > 0 && (tab === 'calendar' || tab === 'money') && (
+          <div className="bg-white rounded-2xl border border-indigo-200 p-4 mb-4">
+            <p className="text-sm font-semibold text-slate-800 mb-2">
+              Mensualidades por cobrar ({cuotasVencidas.length})
+            </p>
+            <div className="space-y-2">
+              {cuotasVencidas.map(c => (
+                <div key={c.id} className="flex items-center gap-3 p-3 bg-indigo-50 rounded-xl">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-900 truncate">{c.guest_name}</p>
+                    <p className="text-xs text-slate-500 capitalize">{c.room_name} · {fmtMesCorto(c.period_start)}</p>
+                  </div>
+                  <span className="text-sm font-bold text-indigo-600 flex-shrink-0">{c.amount.toFixed(0)}€</span>
+                  <button onClick={() => { setCuotaModal(c); setCuotaMetodo('Efectivo'); setCuotaImporte(String(c.amount)); }}
+                    className="flex-shrink-0 h-11 px-3 rounded-xl bg-indigo-500 text-white text-xs font-semibold active:scale-95 transition-transform">
+                    Cobrar
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* CALENDARIO */}
         {tab === 'calendar' && (
@@ -786,12 +950,18 @@ export function ClientPanel() {
                                   style={{
                                     left: b.left + (b.clipStart ? 0 : 2),
                                     width: b.width - (b.clipStart ? 0 : 2) - (b.clipEnd ? 0 : 2),
-                                    background: prop.color, zIndex: 10, clipPath: clip, borderRadius: 8,
+                                    background: esMensual(r) ? '#6366F1' : prop.color,
+                                    backgroundImage: esMensual(r)
+                                      ? 'repeating-linear-gradient(45deg, rgba(255,255,255,0.10) 0 8px, transparent 8px 16px)'
+                                      : undefined,
+                                    zIndex: 10, clipPath: clip, borderRadius: 8,
                                     paddingLeft: b.clipStart ? diente + 4 : 8,
                                     paddingRight: b.clipEnd ? diente + 4 : 8,
                                   }}>
                                   <span className="truncate">{r.guest_name}</span>
-                                  {pagada
+                                  {esMensual(r)
+                                    ? <span className="flex-shrink-0 bg-white/25 rounded px-1 text-[9px]">mes</span>
+                                    : pagada
                                     ? <span className="flex-shrink-0 bg-white/30 rounded px-1 text-[9px]">✓</span>
                                     : <span className="flex-shrink-0 bg-white/25 rounded px-1 text-[9px]">{pend.toFixed(0)}€</span>}
                                 </button>
@@ -934,6 +1104,16 @@ export function ClientPanel() {
             if (chk > 0) movs.push({
               key: `c${r.id}`, fecha: r.check_in, concepto: r.guest_name,
               metodo: `Entrada · ${r.checkin_method || '—'}${marca}`, importe: chk, efectivo: esEfectivo(r.checkin_method),
+            });
+          });
+
+          // Mensualidades ya cobradas.
+          cuotas.forEach(c => {
+            if (!c.paid_at) return;
+            movs.push({
+              key: `q${c.id}`, fecha: c.paid_at, concepto: c.guest_name || 'Renta mensual',
+              metodo: `Mensualidad ${fmtMesCorto(c.period_start)} · ${c.method || '—'}`,
+              importe: c.amount, efectivo: esEfectivo(c.method || undefined),
             });
           });
 
@@ -1113,12 +1293,17 @@ export function ClientPanel() {
                 <div className="flex items-center gap-2 mb-4 flex-wrap">
                   <h3 className="text-xl font-bold text-slate-900">{selected.guest_name}</h3>
                   {selected.no_show && <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">No vino</span>}
+                  {esMensual(selected) && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium">Por meses</span>}
                 </div>
 
                 <div className="space-y-2.5 mb-4 text-sm">
                   <div className="flex items-center gap-3">
                     <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span>{fmtDate(selected.check_in)} → {fmtDate(selected.check_out)} · {n} {n === 1 ? 'noche' : 'noches'}</span>
+                    <span>
+                      {fmtDate(selected.check_in)} → {fmtDate(selected.check_out)} · {esMensual(selected)
+                        ? `${cuotasDe(selected.id).length} ${cuotasDe(selected.id).length === 1 ? 'mes' : 'meses'}`
+                        : `${n} ${n === 1 ? 'noche' : 'noches'}`}
+                    </span>
                   </div>
                   <div className="flex items-center gap-3">
                     <Users className="w-4 h-4 text-slate-400 flex-shrink-0" />
@@ -1150,6 +1335,14 @@ export function ClientPanel() {
                       <span className="font-semibold text-emerald-600">{(selected.checkin_amount || 0).toFixed(0)}€</span>
                     </div>
                   )}
+                  {esMensual(selected) && cuotasDe(selected.id).some(c => c.paid_at) && (
+                    <div className="flex justify-between text-sm mb-1.5">
+                      <span className="text-indigo-600">Mensualidades cobradas</span>
+                      <span className="font-semibold text-indigo-600">
+                        {cuotasDe(selected.id).filter(c => c.paid_at).reduce((a, c) => a + c.amount, 0).toFixed(0)}€
+                      </span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-sm border-t border-slate-200 pt-1.5">
                     <span className="text-slate-500">{selected.no_show ? 'Retenido' : 'Pendiente'}</span>
                     <span className={`font-bold ${pend > 0 ? 'text-[#E05A2B]' : 'text-emerald-600'}`}>
@@ -1157,6 +1350,47 @@ export function ClientPanel() {
                     </span>
                   </div>
                 </div>
+
+                {esMensual(selected) && (() => {
+                  const cs = cuotasDe(selected.id);
+                  return (
+                    <div className="bg-indigo-50 rounded-xl p-4 mb-4 border border-indigo-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-semibold text-slate-700">
+                          Mensualidades · {(selected.monthly_rate || 0).toFixed(0)}€/mes
+                        </p>
+                        <span className="text-[10px] text-slate-500">
+                          {cs.filter(c => c.paid_at).length}/{cs.length} cobradas
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {cs.map(c => (
+                          <div key={c.id} className="flex items-center gap-2 bg-white rounded-lg px-2.5 py-2">
+                            <span className="text-xs font-medium text-slate-700 capitalize flex-1 min-w-0 truncate">{fmtMesCorto(c.period_start)}</span>
+                            <span className="text-xs font-semibold text-slate-800">{c.amount.toFixed(0)}€</span>
+                            {c.paid_at ? (
+                              <button onClick={() => pedirDeshacerCuota(c)}
+                                className="h-9 px-2.5 rounded-lg bg-emerald-100 text-emerald-700 text-[10px] font-semibold active:scale-95 transition-transform">
+                                ✓ {c.method || 'Cobrada'}
+                              </button>
+                            ) : (
+                              <button onClick={() => { setCuotaModal(c); setCuotaMetodo('Efectivo'); setCuotaImporte(String(c.amount)); }}
+                                className="h-9 px-2.5 rounded-lg bg-indigo-500 text-white text-[10px] font-semibold active:scale-95 transition-transform">
+                                Cobrar
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      {!selected.no_show && (
+                        <button onClick={() => pedirProrroga(selected)}
+                          className="w-full mt-2.5 h-11 rounded-xl border border-indigo-200 bg-white text-indigo-700 text-xs font-semibold active:scale-[0.98] transition-transform">
+                          + Añadir un mes
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {selected.notes && <div className="bg-yellow-50 rounded-xl p-3 mb-4 text-xs text-slate-600 whitespace-pre-wrap">{selected.notes}</div>}
 
@@ -1237,6 +1471,20 @@ export function ClientPanel() {
                   </div>
                 </div>
 
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">Modalidad</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => setModalidad('nightly')}
+                      className={`h-11 rounded-xl text-xs font-semibold border transition-colors ${form.rental_type !== 'monthly' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200'}`}>
+                      Por noches
+                    </button>
+                    <button type="button" onClick={() => setModalidad('monthly')}
+                      className={`h-11 rounded-xl text-xs font-semibold border transition-colors ${form.rental_type === 'monthly' ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-500 border-slate-200'}`}>
+                      Por meses
+                    </button>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="text-xs font-medium text-slate-600 mb-1 block">Personas *</label>
@@ -1250,33 +1498,77 @@ export function ClientPanel() {
                       className="w-full border border-slate-200 rounded-xl px-2 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">Salida *</label>
-                    <input required type="date" value={form.check_out} onChange={e => cambiarFecha('check_out', e.target.value)}
-                      className="w-full border border-slate-200 rounded-xl px-2 py-3 text-sm focus:outline-none focus:border-[#E05A2B]" />
+                    <label className="text-xs font-medium text-slate-600 mb-1 block">
+                      {form.rental_type === 'monthly' ? 'Salida (auto)' : 'Salida *'}
+                    </label>
+                    <input required type="date" value={form.check_out} readOnly={form.rental_type === 'monthly'}
+                      onChange={e => cambiarFecha('check_out', e.target.value)}
+                      className={`w-full border rounded-xl px-2 py-3 text-sm focus:outline-none ${form.rental_type === 'monthly' ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-slate-200 focus:border-[#E05A2B]'}`} />
                   </div>
                 </div>
 
-                <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
-                  <p className="text-xs font-semibold text-slate-600 mb-3">Precio</p>
-                  <div className="grid grid-cols-3 gap-2">
+                {form.rental_type === 'monthly' ? (
+                  <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100 space-y-3">
+                    <p className="text-xs font-semibold text-slate-700">🔑 Alquiler por meses</p>
                     <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">€/noche</label>
-                      <input type="number" value={form.price_per_night} onChange={e => cambiarPPN(e.target.value)}
-                        className="w-full border border-slate-200 rounded-xl px-2 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">Noches</label>
-                      <div className="border border-slate-200 rounded-xl px-2 py-2.5 text-sm bg-white text-slate-700 font-medium text-center">
-                        {noches(form.check_in, form.check_out) || '—'}
+                      <label className="text-[10px] text-slate-500 mb-1.5 block">¿Cuántos meses?</label>
+                      <div className="flex flex-wrap gap-2">
+                        {[1, 2, 3, 4, 6, 12].map(n => (
+                          <button key={n} type="button" onClick={() => setMeses(n)}
+                            className={`h-11 w-11 rounded-xl text-xs font-bold border transition-colors ${(Number(form.months_count) || 1) === n ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-600 border-slate-200'}`}>
+                            {n}
+                          </button>
+                        ))}
+                        <input type="number" min="1" value={form.months_count}
+                          onChange={e => setMeses(Number(e.target.value))}
+                          className="h-11 w-20 border border-slate-200 rounded-xl px-3 text-sm text-center bg-white focus:outline-none focus:border-indigo-500" />
                       </div>
                     </div>
                     <div>
-                      <label className="text-[10px] text-slate-500 mb-1 block">Total</label>
-                      <input type="number" value={form.price_total} onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))}
-                        className="w-full border border-[#E05A2B]/40 rounded-xl px-2 py-2.5 text-sm bg-orange-50 text-[#E05A2B] font-bold text-center focus:outline-none" placeholder="0" />
+                      <label className="text-[10px] text-slate-500 mb-1 block">Importe por mes (€) *</label>
+                      <input required type="number" min="0" step="0.01" value={form.monthly_rate}
+                        onChange={e => setImporteMes(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm bg-white focus:outline-none focus:border-indigo-500" placeholder="0" />
+                    </div>
+                    {Number(form.monthly_rate) > 0 && (
+                      <div className="bg-white rounded-xl p-3 text-xs space-y-1">
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">{Number(form.months_count) || 1} × {Number(form.monthly_rate).toFixed(0)}€</span>
+                          <span className="font-bold text-indigo-600">{(Number(form.monthly_rate) * (Number(form.months_count) || 1)).toFixed(0)}€</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Periodo</span>
+                          <span className="font-medium text-slate-700">{fmtDate(form.check_in)} → {fmtDate(form.check_out)}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 pt-1 border-t border-slate-100">
+                          Se crearán {Number(form.months_count) || 1} mensualidades pendientes. Las vas cobrando desde la ficha.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                    <p className="text-xs font-semibold text-slate-600 mb-3">Precio</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-500 mb-1 block">€/noche</label>
+                        <input type="number" value={form.price_per_night} onChange={e => cambiarPPN(e.target.value)}
+                          className="w-full border border-slate-200 rounded-xl px-2 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]" placeholder="0" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500 mb-1 block">Noches</label>
+                        <div className="border border-slate-200 rounded-xl px-2 py-2.5 text-sm bg-white text-slate-700 font-medium text-center">
+                          {noches(form.check_in, form.check_out) || '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500 mb-1 block">Total</label>
+                        <input type="number" value={form.price_total} onChange={e => setForm(f => ({ ...f, price_total: e.target.value }))}
+                          className="w-full border border-[#E05A2B]/40 rounded-xl px-2 py-2.5 text-sm bg-orange-50 text-[#E05A2B] font-bold text-center focus:outline-none" placeholder="0" />
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
                 <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
                   <p className="text-xs font-semibold text-slate-700 mb-3">Señal cobrada</p>
@@ -1300,6 +1592,7 @@ export function ClientPanel() {
                   </div>
                 </div>
 
+                {form.rental_type !== 'monthly' && (
                 <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
                   <p className="text-xs font-semibold text-slate-700 mb-3">Cobrado al entrar</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -1321,6 +1614,7 @@ export function ClientPanel() {
                     </div>
                   </div>
                 </div>
+                )}
 
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Canal</label>
@@ -1353,6 +1647,55 @@ export function ClientPanel() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Cobrar mensualidad */}
+      <AnimatePresence>
+        {cuotaModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center"
+            onClick={e => { if (e.target === e.currentTarget && !busy) setCuotaModal(null); }}>
+            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 30 }}
+              className="bg-white rounded-t-3xl sm:rounded-2xl w-full sm:max-w-sm shadow-xl p-6" onClick={e => e.stopPropagation()}>
+              <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-5 sm:hidden" />
+              <h3 className="font-semibold text-slate-900 mb-1">Cobrar mensualidad</h3>
+              <p className="text-xs text-slate-500 mb-4 capitalize">
+                {cuotaModal.guest_name} · {fmtMesCorto(cuotaModal.period_start)}
+              </p>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Importe (€)</label>
+                  <input type="number" inputMode="decimal" value={cuotaImporte}
+                    onChange={e => setCuotaImporte(e.target.value)}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-2 block">¿Cómo te pagó?</label>
+                  <div className="flex flex-wrap gap-2">
+                    {METODOS.map(m => (
+                      <button key={m} type="button" onClick={() => setCuotaMetodo(m)}
+                        className={`h-11 px-3 rounded-xl text-xs font-medium border transition-colors ${cuotaMetodo === m ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-500 border-slate-200'}`}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1.5">
+                    {esEfectivo(cuotaMetodo) ? 'Entra en tu efectivo' : 'Entra en tu banco'}
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <button disabled={busy} onClick={() => setCuotaModal(null)}
+                    className="flex-1 h-12 border border-slate-200 rounded-xl text-sm text-slate-600 disabled:opacity-50">Cancelar</button>
+                  <button disabled={busy} onClick={confirmarCobroCuota}
+                    className="flex-1 h-12 bg-indigo-500 text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+                    {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {busy ? 'Guardando...' : 'Confirmar'}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
