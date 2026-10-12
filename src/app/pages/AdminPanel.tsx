@@ -1,20 +1,33 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale, Calculator, UserX, KeyRound, Loader2, Building2 } from 'lucide-react';
-import { ClientesTab } from '../components/ClientesTab';
+import { LogOut, Plus, ChevronLeft, ChevronRight, X, Users, Globe, Phone, Mail, Calendar, Trash2, Edit2, CalendarDays, BarChart2, Home, AlertCircle, CheckCircle, Clock, Bell, BellOff, Search, Wallet, Scale, Calculator, UserX, KeyRound, Loader2 } from 'lucide-react';
 
 const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
+// Los pisos. `own: true` = es nuestro: admite renta mensual y tiene caja de
+// efectivo propia. Sagrada Família es de un tercero, solo cobramos comisión.
+// Para añadir un piso o una habitación basta con tocar esta lista: el resto
+// (cajas, renta mensual, mapa habitación→piso) se deriva de aquí abajo.
 const PROPERTIES = [
-  { id: 'sagrera', name: 'Sagrera', color: '#3B82F6', light: '#EFF6FF', rooms: [{ id: 1, name: 'Hab. Doble Sagrera', type: 'double' }] },
-  { id: 'born', name: 'El Born', color: '#10B981', light: '#ECFDF5', rooms: [
+  { id: 'sagrera', name: 'Sagrera', own: true, color: '#3B82F6', light: '#EFF6FF', rooms: [
+    { id: 1, name: 'Hab. Doble Sagrera', type: 'double' },
+    { id: 8, name: 'Hab. Mediana 1', type: 'medium' },
+    { id: 9, name: 'Hab. Mediana 2', type: 'medium' },
+  ]},
+  { id: 'born', name: 'El Born', own: true, color: '#10B981', light: '#ECFDF5', rooms: [
     { id: 5, name: 'Hab. 1 Doble', type: 'double' },
     { id: 6, name: 'Hab. 2 Doble', type: 'double' },
     { id: 2, name: 'Hab. 3 Mediana', type: 'medium' },
     { id: 3, name: 'Hab. 4 Mediana', type: 'medium' },
     { id: 4, name: 'Hab. 5 Mediana', type: 'medium' },
   ]},
-  { id: 'sagrada', name: 'Sagrada Família', color: '#8B5CF6', light: '#F5F3FF', rooms: [{ id: 7, name: 'Hab. Doble Sagrada Família', type: 'double' }] },
+  { id: 'clot', name: 'Clot', own: true, color: '#F59E0B', light: '#FFFBEB', rooms: [
+    { id: 10, name: 'Hab. Doble Grande', type: 'large' },
+    { id: 11, name: 'Hab. Mediana', type: 'medium' },
+  ]},
+  { id: 'sagrada', name: 'Sagrada Família', own: false, color: '#8B5CF6', light: '#F5F3FF', rooms: [
+    { id: 7, name: 'Hab. Doble Sagrada Família', type: 'double' },
+  ]},
 ];
 
 const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyId: p.id, propertyName: p.name, color: p.color, light: p.light })));
@@ -23,40 +36,59 @@ const PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Depósito bancario', 'Pay
 const EXPENSE_CATEGORIES = ['🛋️ Mobiliario', '🔧 Mantenimiento', '🧹 Limpieza', '💡 Suministros', '🏠 Alquiler/Hipoteca', '📦 Equipamiento', '📋 Otros'];
 const PAGADORES = ['Alvaro', 'Jeffer'];
 
-// Solo las medianas del Born admiten renta mensual.
-const MONTHLY_ROOM_IDS = [2, 3, 4];
+// Mapa habitación → piso, derivado de PROPERTIES.
+const ROOM_TO_PROPERTY: Record<number, string> = Object.fromEntries(
+  PROPERTIES.flatMap(p => p.rooms.map(r => [r.id, p.id] as [number, string]))
+);
+
+const OWN_PROPERTY_IDS = PROPERTIES.filter(p => p.own).map(p => p.id);
+
+// Todas las habitaciones de los pisos propios admiten renta mensual, además
+// de la estancia por noches. Sagrada Família queda fuera: no es nuestra.
+const MONTHLY_ROOM_IDS = PROPERTIES.filter(p => p.own).flatMap(p => p.rooms.map(r => r.id));
 function admiteMensual(room_id: number): boolean {
   return MONTHLY_ROOM_IDS.includes(Number(room_id));
 }
 
-type Caja = 'born' | 'sagrera' | 'bbva';
+function tipoLabel(type?: string): string {
+  if (type === 'double') return 'Doble';
+  if (type === 'large') return 'Doble grande';
+  return 'Mediana';
+}
+
+// Una caja de efectivo por piso propio, más el BBVA como cuenta común
+// (luz, agua y todo lo que se paga con tarjeta).
+type Caja = 'born' | 'sagrera' | 'clot' | 'bbva';
 const CASH_METHODS = ['Efectivo'];
 
-const CAJAS_INFO: { id: Caja; label: string; icon: string; color: string; bg: string; border: string; countLabel: string }[] = [
-  { id: 'born',    label: 'Caja El Born', icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200', countLabel: 'Efectivo contado' },
-  { id: 'sagrera', label: 'Caja Sagrera', icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',    border: 'border-blue-200',    countLabel: 'Efectivo contado' },
-  { id: 'bbva',    label: 'Cuenta BBVA',  icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',  border: 'border-slate-300',   countLabel: 'Saldo real en el banco' },
-];
+// Si el método no es efectivo, el movimiento va al BBVA. Cuando sí lo es, el
+// piso decide la caja. El efectivo de Sagrada Família no tiene caja propia
+// (no es nuestro piso), así que se guarda en la de Sagrera, como hasta ahora.
+const CAJA_FALLBACK: Caja = 'sagrera';
+function cajaDePiso(property_id?: string): Caja {
+  return (OWN_PROPERTY_IDS.includes(String(property_id)) ? String(property_id) : CAJA_FALLBACK) as Caja;
+}
 
-const ROOM_TO_PROPERTY: Record<number, string> = {
-  1: 'sagrera',
-  2: 'born', 3: 'born', 4: 'born', 5: 'born', 6: 'born',
-  7: 'sagrada',
-};
+const CAJAS_INFO: { id: Caja; label: string; icon: string; color: string; bg: string; border: string; countLabel: string }[] = [
+  { id: 'born',    label: 'Caja El Born', icon: '💵', color: 'text-emerald-600', bg: 'bg-emerald-50',  border: 'border-emerald-200', countLabel: 'Efectivo contado' },
+  { id: 'sagrera', label: 'Caja Sagrera', icon: '💵', color: 'text-blue-600',    bg: 'bg-blue-50',     border: 'border-blue-200',    countLabel: 'Efectivo contado' },
+  { id: 'clot',    label: 'Caja Clot',    icon: '💵', color: 'text-amber-600',   bg: 'bg-amber-50',    border: 'border-amber-200',   countLabel: 'Efectivo contado' },
+  { id: 'bbva',    label: 'Cuenta BBVA',  icon: '🏦', color: 'text-slate-700',   bg: 'bg-slate-100',   border: 'border-slate-300',   countLabel: 'Saldo real en el banco' },
+];
 
 function isCash(method?: string): boolean { return CASH_METHODS.includes((method || '').trim()); }
 
 function cajaDeReserva(room_id: number, method?: string): Caja {
   if (!isCash(method)) return 'bbva';
-  return ROOM_TO_PROPERTY[Number(room_id)] === 'born' ? 'born' : 'sagrera';
+  return cajaDePiso(ROOM_TO_PROPERTY[Number(room_id)]);
 }
 function cajaDeGasto(property_id: string, method?: string): Caja {
   if (!isCash(method)) return 'bbva';
-  return property_id === 'born' ? 'born' : 'sagrera';
+  return cajaDePiso(property_id);
 }
 function cajaLabel(c: Caja): string { return CAJAS_INFO.find(x => x.id === c)!.label; }
 
-const MANAGED_ROOM_IDS = [7];
+const MANAGED_ROOM_IDS = PROPERTIES.filter(p => !p.own).flatMap(p => p.rooms.map(r => r.id));
 const DEFAULT_COMMISSION_PER_PAX_NIGHT = 4;
 function isManaged(room_id: number): boolean { return MANAGED_ROOM_IDS.includes(Number(room_id)); }
 
@@ -253,7 +285,8 @@ function construirMovimientos(reservations: Reservation[], expenses: Expense[], 
   return movs.sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key));
 }
 
-const CAJAS_CERO = (): Record<Caja, number> => ({ born: 0, sagrera: 0, bbva: 0 });
+const CAJAS_CERO = (): Record<Caja, number> =>
+  Object.fromEntries(CAJAS_INFO.map(c => [c.id, 0] as [Caja, number])) as Record<Caja, number>;
 
 function acumular(movs: Movimiento[]): Record<Caja, number> {
   const acc = CAJAS_CERO();
@@ -350,7 +383,7 @@ export function AdminPanel() {
   const [formError, setFormError] = useState('');
   const [selectedProperty, setSelectedProperty] = useState<string>('sagrera');
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
-  const [activeTab, setActiveTab] = useState<'today' | 'calc' | 'calendar' | 'expenses' | 'stats' | 'cuadre' | 'clientes'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'calc' | 'calendar' | 'expenses' | 'stats' | 'cuadre'>('today');
   const [showPayModal, setShowPayModal] = useState(false);
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('Efectivo');
@@ -1350,7 +1383,7 @@ export function AdminPanel() {
                             <div className="min-w-0">
                               <p className="text-[11px] font-medium text-slate-700 truncate">{room.name}</p>
                               <p className="text-[9px] text-slate-400">
-                                {room.type === 'double' ? 'Doble' : 'Mediana'}
+                                {tipoLabel(room.type)}
                                 {admiteMensual(room.id) && <span className="text-indigo-400"> · mensual</span>}
                               </p>
                             </div>
@@ -1863,9 +1896,6 @@ export function AdminPanel() {
           );
         })()}
 
-        {/* CLIENTES */}
-        {activeTab === 'clientes' && <ClientesTab token={token} />}
-
       </div>
 
       {/* Navegación inferior */}
@@ -1875,15 +1905,14 @@ export function AdminPanel() {
             { id: 'today', icon: Home, label: 'Hoy' },
             { id: 'calc', icon: Calculator, label: 'Calcular' },
             { id: 'calendar', icon: CalendarDays, label: 'Calendario' },
-            { id: 'clientes', icon: Building2, label: 'Clientes' },
             { id: 'expenses', icon: Wallet, label: 'Gastos' },
             { id: 'cuadre', icon: Scale, label: 'Cuadre' },
             { id: 'stats', icon: BarChart2, label: 'Stats' },
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id as any)}
-              className={`flex-1 min-w-0 flex flex-col items-center justify-center h-14 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
-              <tab.icon className="w-5 h-5 flex-shrink-0" />
-              <span className="text-[8px] font-medium truncate max-w-full px-0.5">{tab.label}</span>
+              className={`flex-1 flex flex-col items-center justify-center h-14 gap-0.5 transition-colors ${activeTab === tab.id ? 'text-[#E05A2B]' : 'text-slate-400'}`}>
+              <tab.icon className="w-5 h-5" />
+              <span className="text-[9px] font-medium">{tab.label}</span>
             </button>
           ))}
         </div>

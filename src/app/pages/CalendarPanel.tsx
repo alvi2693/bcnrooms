@@ -6,8 +6,14 @@ const BACKEND_URL = 'https://barcelonago-backend-9g7y.onrender.com';
 
 // Mismo mapa de pisos que AdminPanel. Se duplica a propósito: este panel
 // tiene que poder desplegarse sin arrastrar nada del panel de administración.
+// Misma lista que en el AdminPanel. Si añades un piso o una habitación,
+// hay que tocarla en los dos sitios.
 const PROPERTIES = [
-  { id: 'sagrera', name: 'Sagrera', color: '#3B82F6', light: '#EFF6FF', rooms: [{ id: 1, name: 'Hab. Doble Sagrera', type: 'double' }] },
+  { id: 'sagrera', name: 'Sagrera', color: '#3B82F6', light: '#EFF6FF', rooms: [
+    { id: 1, name: 'Hab. Doble Sagrera', type: 'double' },
+    { id: 8, name: 'Hab. Mediana 1', type: 'medium' },
+    { id: 9, name: 'Hab. Mediana 2', type: 'medium' },
+  ]},
   { id: 'born', name: 'El Born', color: '#10B981', light: '#ECFDF5', rooms: [
     { id: 5, name: 'Hab. 1 Doble', type: 'double' },
     { id: 6, name: 'Hab. 2 Doble', type: 'double' },
@@ -15,11 +21,24 @@ const PROPERTIES = [
     { id: 3, name: 'Hab. 4 Mediana', type: 'medium' },
     { id: 4, name: 'Hab. 5 Mediana', type: 'medium' },
   ]},
-  { id: 'sagrada', name: 'Sagrada Família', color: '#8B5CF6', light: '#F5F3FF', rooms: [{ id: 7, name: 'Hab. Doble Sagrada Família', type: 'double' }] },
+  { id: 'clot', name: 'Clot', color: '#F59E0B', light: '#FFFBEB', rooms: [
+    { id: 10, name: 'Hab. Doble Grande', type: 'large' },
+    { id: 11, name: 'Hab. Mediana', type: 'medium' },
+  ]},
+  { id: 'sagrada', name: 'Sagrada Família', color: '#8B5CF6', light: '#F5F3FF', rooms: [
+    { id: 7, name: 'Hab. Doble Sagrada Família', type: 'double' },
+  ]},
 ];
+
+function tipoLabel(type?: string): string {
+  if (type === 'double') return 'Doble';
+  if (type === 'large') return 'Doble grande';
+  return 'Mediana';
+}
 
 const ALL_ROOMS = PROPERTIES.flatMap(p => p.rooms.map(r => ({ ...r, propertyName: p.name, color: p.color })));
 const CHANNELS = ['WhatsApp', 'Facebook', 'Airbnb', 'Booking', 'Instagram', 'Directo'];
+const DEPOSIT_METHODS = ['Transferencia', 'Bizum', 'PayPal', 'Efectivo'];
 
 const NATIONALITIES = [
   'Alemana','Austriaca','Belga','Búlgara','Checa','Croata','Danesa','Eslovaca','Eslovena','Española',
@@ -54,6 +73,8 @@ const emptyForm = {
   check_out: '',
   price_per_night: '',
   price_total: '',
+  deposit_amount: '',
+  deposit_method: 'Transferencia',
   channel: 'WhatsApp',
   notes: '',
 };
@@ -206,6 +227,7 @@ export function CalendarPanel() {
         num_persons: Number(form.num_persons),
         price_per_night: form.price_per_night ? Number(form.price_per_night) : null,
         price_total: form.price_total ? Number(form.price_total) : null,
+        deposit_amount: Number(form.deposit_amount) || 0,
       };
       const res = await fetch(`${BACKEND_URL}/calendar/reservations`, {
         method: 'POST',
@@ -377,7 +399,7 @@ export function CalendarPanel() {
                           className="sticky left-0 z-30 flex items-center px-3 border-r border-slate-100 bg-white">
                           <div>
                             <p className="text-[11px] font-medium text-slate-700">{room.name}</p>
-                            <p className="text-[9px] text-slate-400">{room.type === 'double' ? 'Doble' : 'Mediana'}</p>
+                            <p className="text-[9px] text-slate-400">{tipoLabel(room.type)}</p>
                           </div>
                         </div>
                         <div className="relative flex-1">
@@ -434,7 +456,7 @@ export function CalendarPanel() {
         </div>
 
         <p className="text-[11px] text-slate-400 mt-3 px-1">
-          Anota el precio acordado al crear la reserva. El cobro lo registra Álvaro cuando entre el dinero.
+          Anota el precio acordado y la señal cobrada. El pago que se hace al llegar lo registra Álvaro.
         </p>
       </div>
 
@@ -590,6 +612,56 @@ export function CalendarPanel() {
                     Pon el €/noche y el total se calcula solo. Puedes cambiar el total a mano si pactaste otra cifra.
                   </p>
                 </div>
+
+                {/* Señal cobrada al cerrar la reserva */}
+                <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
+                  <p className="text-xs font-semibold text-slate-700 mb-3">Pago al reservar</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Importe (€)</label>
+                      <input type="number" min="0" step="0.01" value={form.deposit_amount}
+                        onChange={e => setForm(f => ({ ...f, deposit_amount: e.target.value }))}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-[#E05A2B]"
+                        placeholder="0" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 mb-1 block">Método</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {DEPOSIT_METHODS.map(m => (
+                          <button key={m} type="button" onClick={() => setForm(f => ({ ...f, deposit_method: m }))}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors ${form.deposit_method === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-3">
+                    Déjalo en 0 si todavía no ha pagado nada. El resto se cobra al llegar.
+                  </p>
+                </div>
+
+                {/* Resumen */}
+                {Number(form.price_total) > 0 && (
+                  <div className="bg-slate-50 rounded-xl p-3 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Total estancia</span>
+                      <span className="font-semibold text-slate-900">{Number(form.price_total).toFixed(0)}€</span>
+                    </div>
+                    {Number(form.deposit_amount) > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-blue-600">Señal ({form.deposit_method})</span>
+                        <span className="font-semibold text-blue-600">{Number(form.deposit_amount).toFixed(0)}€</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1">
+                      <span className="text-slate-500">Pendiente al llegar</span>
+                      <span className="font-bold text-[#E05A2B]">
+                        {Math.max(0, Number(form.price_total) - (Number(form.deposit_amount) || 0)).toFixed(0)}€
+                      </span>
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1 block">Canal</label>
                   <div className="flex flex-wrap gap-2">
